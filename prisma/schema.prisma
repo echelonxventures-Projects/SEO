@@ -1,0 +1,3818 @@
+// OmniMark — Digital Marketing Platform
+// Data contract: entities, context, relationships.
+// Money = BigInt minor units; quantities = Int x 100; rates = basis points.
+// No floats for money anywhere; no business configuration hardcoded in code.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Identity & Access
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+}
+
+model User {
+  id                String     @id @default(cuid())
+  email             String     @unique
+  emailNormalized   String     @unique
+  name              String
+  passwordHash      String?
+  status            UserStatus @default(ACTIVE)
+  emailVerifiedAt   DateTime?
+  failedLoginCount  Int        @default(0)
+  lockedUntil       DateTime?
+  isPlatformAdmin   Boolean    @default(false)
+  lastLoginAt       DateTime?
+  totpSecretEnc     Json?
+  totpEnabledAt     DateTime?
+  recoveryCodesHash String[]
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  sessions            Session[]
+  memberships         Membership[]
+  invitedBy           Invitation[]    @relation("InvitedBy")
+  acceptedInvitations Invitation[]    @relation("InvitationRecipient")
+  apiKeys             ApiKey[]
+  activityLogs        ActivityLog[]
+  notesCreated        Note[]          @relation("NoteAuthor")
+  createdClients      Client[]        @relation("ClientOwner")
+  createdProjects     Project[]       @relation("ProjectOwner")
+  assignedTasks       Task[]          @relation("TaskAssignee")
+  loggedTime          TimeEntry[]
+  approvedQuotes      Quote[]         @relation("QuoteApprover")
+  createdQuotes       Quote[]         @relation("QuoteCreator")
+  createdInvoices     Invoice[]       @relation("InvoiceCreator")
+  recordedPayments    Payment[]       @relation("PaymentRecorder")
+  reportRuns          ReportRun[]
+  siteAuditsRequested SiteAudit[]     @relation("AuditRequester")
+  projectMemberships  ProjectMember[]
+  generationJobs      GenerationJob[] @relation("JobCreator")
+  blogPosts           BlogPost[]      @relation("BlogCreator")
+  adCreatives         AdCreative[]    @relation("AdCreator")
+  contentPosts        ContentPost[]   @relation("ContentCreator")
+
+  @@index([status])
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  csrfSecret String
+  ip         String?
+  userAgent  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastSeenAt DateTime  @default(now())
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+enum OtpPurpose {
+  PASSWORD_RESET
+  EMAIL_VERIFICATION
+}
+
+model OtpToken {
+  id         String     @id @default(cuid())
+  purpose    OtpPurpose
+  subject    String
+  codeHash   String     @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int        @default(0)
+  createdAt  DateTime   @default(now())
+
+  @@index([purpose, subject])
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+model Invitation {
+  id              String           @id @default(cuid())
+  orgId           String
+  email           String
+  emailNormalized String
+  roleCode        String
+  invitedById     String
+  acceptedById    String?
+  status          InvitationStatus @default(PENDING)
+  tokenHash       String           @unique
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  invitedBy  User         @relation("InvitedBy", fields: [invitedById], references: [id])
+  acceptedBy User?        @relation("InvitationRecipient", fields: [acceptedById], references: [id])
+
+  @@unique([orgId, emailNormalized, roleCode])
+  @@index([status])
+}
+
+model ApiKey {
+  id              String    @id @default(cuid())
+  orgId           String
+  name            String
+  prefix          String
+  keyHash         String    @unique
+  scopes          String[]
+  lastUsedAt      DateTime?
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  createdByUserId String
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User         @relation(fields: [createdByUserId], references: [id])
+
+  @@index([orgId])
+}
+
+// ---------------------------------------------------------------------------
+// Organizations, Roles, Permissions
+// ---------------------------------------------------------------------------
+
+enum OrgStatus {
+  ACTIVE
+  TRIALING
+  SUSPENDED
+  CANCELLED
+}
+
+model Organization {
+  id                  String    @id @default(cuid())
+  name                String
+  slug                String    @unique
+  status              OrgStatus @default(TRIALING)
+  defaultCurrencyCode String    @default("INR")
+  timezone            String    @default("Asia/Kolkata")
+  locale              String    @default("en-IN")
+  state               String?
+  country             String    @default("IN")
+  addressLine1        String?
+  addressLine2        String?
+  city                String?
+  postalCode          String?
+  gstin               String?
+  taxIdType           String?
+  phone               String?
+  email               String?
+  website             String?
+  logoUrl             String?
+  billingEmail        String?
+  trialEndsAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  defaultCurrency     Currency                 @relation("OrgDefaultCurrency", fields: [defaultCurrencyCode], references: [code])
+  memberships         Membership[]
+  clients             Client[]
+  leads               Lead[]
+  projects            Project[]
+  tasks               Task[]
+  timeEntries         TimeEntry[]
+  expenses            Expense[]
+  notes               Note[]
+  serviceItems        ServiceItem[]
+  quotes              Quote[]
+  invoices            Invoice[]
+  tenantInvoices      Invoice[]                @relation("TenantBilling")
+  payments            Payment[]
+  refunds             Refund[]
+  taxRates            TaxRate[]
+  categories          Category[]
+  pipelineStages      PipelineStage[]
+  documentSequences   DocumentSequence[]
+  keywords            Keyword[]                @relation("KeywordOrg")
+  rankSnapshots       RankSnapshot[]
+  geoLocations        GeoLocation[]
+  backlinks           Backlink[]
+  siteAudits          SiteAudit[]
+  campaigns           Campaign[]
+  campaignMetrics     CampaignMetric[]
+  reports             Report[]
+  activityLogs        ActivityLog[]
+  apiKeys             ApiKey[]
+  invitations         Invitation[]
+  subscriptions       Subscription[]
+  gateways            GatewayConfig[]
+  socialAppConfigs    SocialAppConfig[]
+  socialConnections   SocialConnection[]
+  contentPosts        ContentPost[]
+  contentTargets      ContentTarget[]
+  trackedLinks        TrackedLink[]
+  channels            Channel[]
+  audiences           Audience[]
+  campaignFlights     CampaignFlight[]
+  audienceMembers     AudienceMember[]
+  connectorTemplates  ConnectorTemplate[]      @relation("ConnectorTemplateOrg")
+  eventSubscriptions  EventSubscription[]
+  offers              Offer[]
+  offerRedemptions    OfferRedemption[]
+  learnings           LearningsSnapshot[]
+  webProperties       WebProperty[]
+  trackingPixels      TrackingPixel[]
+  mailingLists        MailingList[]
+  subscribers         Subscriber[]
+  emailCampaigns      EmailCampaign[]
+  pixelTemplates      PixelTemplate[]
+  aiModelConfigs      AiModelConfig[]
+  idempotencyRecords  IdempotencyRecord[]
+  tags                Tag[]
+  contentKinds        ContentKind[]
+  segments            Segment[]
+  scheduleTriggers    ScheduleTrigger[]
+  customFieldDefs     CustomFieldDef[]
+  onboardingSteps     OnboardingStep[]
+  onboardingTemplates OnboardingTemplateStep[]
+  promptTemplates     PromptTemplate[]
+  brandVoices         BrandVoice[]
+  generationJobs      GenerationJob[]
+  blogPosts           BlogPost[]
+  adCreatives         AdCreative[]
+
+  // Universal Temporal Platform (UTP)
+  timeSystems           TimeSystem[]
+  temporalPatterns      TemporalPattern[]
+  temporalExpressions   TemporalExpression[]
+  temporalRanges        TemporalRange[]
+  temporalRules         TemporalRule[]
+  temporalDependencies  TemporalDependency[]
+  calendars             Calendar[]
+  calendarShares        CalendarShare[]
+  scheduledEvents       ScheduledEvent[]
+  resources             Resource[]
+  resourceBookings      ResourceBooking[]
+  availabilityProfiles  AvailabilityProfile[]
+  appointments          Appointment[]
+  appointmentSlots      AppointmentSlot[]
+  shifts                Shift[]
+  shiftAssignments      ShiftAssignment[]
+  coverageRequirements  CoverageRequirement[]
+  temporalTriggers      TemporalTrigger[]
+  executionPlans        ExecutionPlan[]
+  temporalVersions      TemporalVersion[]
+  temporalEventLogs     TemporalEventLog[]
+  holidayCalendars      HolidayCalendar[]
+  fiscalCalendars       FiscalCalendar[]
+  libraryTemplates      LibraryTemplate[]
+  temporalConfiguration TemporalConfiguration?
+  streamTransports     StreamTransport[]
+
+  @@index([status])
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  rank        Int
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions        RolePermission[]
+  memberships        Membership[]
+  projectMemberRoles ProjectMember[]
+
+  @@index([rank])
+}
+
+model Permission {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  module      String
+  action      String
+  name        String
+  description String?
+
+  roles RolePermission[]
+
+  @@index([module])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+enum MembershipStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+model Membership {
+  id        String           @id @default(cuid())
+  orgId     String
+  userId    String
+  roleId    String
+  status    MembershipStatus @default(ACTIVE)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role         @relation(fields: [roleId], references: [id])
+
+  @@unique([orgId, userId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Reference data (DB-driven dictionaries — nothing business-side hardcoded)
+// ---------------------------------------------------------------------------
+
+model Currency {
+  code       String  @id
+  name       String
+  symbol     String
+  minorUnits Int     @default(2)
+  active     Boolean @default(true)
+
+  organizations Organization[] @relation("OrgDefaultCurrency")
+  clients       Client[]
+  projects      Project[]
+  serviceItems  ServiceItem[]
+  quotes        Quote[]
+  invoices      Invoice[]
+  payments      Payment[]
+  plans         Plan[]
+  campaigns     Campaign[]
+  expenses      Expense[]
+  leads         Lead[]
+
+  @@index([active])
+}
+
+enum TaxRateKind {
+  GST_INTRA
+  GST_INTER
+  FLAT
+  TDS
+  NONE
+}
+
+model TaxRate {
+  id                   String      @id @default(cuid())
+  orgId                String?
+  code                 String
+  name                 String
+  kind                 TaxRateKind
+  rateBps              Int
+  gstCategory          String?
+  isDefault            Boolean     @default(false)
+  active               Boolean     @default(true)
+  parentGroupTaxRateId String?
+
+  org          Organization?     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  parentGroup  TaxRate?          @relation("TaxComponentPair", fields: [parentGroupTaxRateId], references: [id])
+  components   TaxRate[]         @relation("TaxComponentPair")
+  invoiceLines InvoiceLineItem[]
+  quoteLines   QuoteLineItem[]
+  serviceItems ServiceItem[]
+
+  @@unique([orgId, code])
+}
+
+enum CategoryKind {
+  SERVICE
+  INDUSTRY
+  LEAD_SOURCE
+  EXPENSE_TYPE
+  CAMPAIGN_CHANNEL
+  PROJECT_TYPE
+}
+
+model Category {
+  id        String       @id @default(cuid())
+  orgId     String?
+  kind      CategoryKind
+  code      String
+  name      String
+  active    Boolean      @default(true)
+  sortOrder Int          @default(0)
+  meta      Json?
+
+  org       Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  services  ServiceItem[]
+  clients   Client[]
+  leads     Lead[]
+  expenses  Expense[]
+  campaigns Campaign[]
+  projects  Project[]
+
+  @@unique([orgId, kind, code])
+  @@index([kind, active])
+}
+
+model PipelineStage {
+  id                String   @id @default(cuid())
+  orgId             String
+  code              String
+  name              String
+  winProbabilityBps Int      @default(0)
+  sortOrder         Int
+  isTerminalWon     Boolean  @default(false)
+  isTerminalLost    Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  leads Lead[]
+
+  @@unique([orgId, code])
+  @@index([orgId, sortOrder])
+}
+
+enum DocKind {
+  QUOTE
+  INVOICE
+  PAYMENT
+}
+
+model DocumentSequence {
+  id        String  @id @default(cuid())
+  orgId     String
+  kind      DocKind
+  pattern   String
+  prefix    String
+  padding   Int     @default(4)
+  nextValue Int     @default(1)
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, kind])
+}
+
+model GeoLocation {
+  id          String  @id @default(cuid())
+  orgId       String?
+  name        String
+  googleId    String?
+  countryCode String?
+  latE7       Int? // latitude × 10^7 (integer doctrine — no floats anywhere)
+  lngE7       Int? // longitude × 10^7
+  active      Boolean @default(true)
+
+  org      Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  keywords Keyword[]     @relation("KeywordLocation")
+
+  @@unique([orgId, name])
+}
+
+// ---------------------------------------------------------------------------
+// CRM
+// ---------------------------------------------------------------------------
+
+enum ClientStatus {
+  PROSPECT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+model Client {
+  id               String       @id @default(cuid())
+  orgId            String
+  name             String
+  legalName        String?
+  status           ClientStatus @default(ACTIVE)
+  industryId       String?
+  website          String?
+  gstin            String?
+  taxExempt        Boolean      @default(false)
+  phone            String?
+  billingEmail     String?
+  currencyCode     String
+  paymentTermsDays Int          @default(15)
+  customFields     Json?
+  addressLine1     String?
+  city             String?
+  state            String?
+  postalCode       String?
+  country          String       @default("IN")
+  ownerId          String
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  org               Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  industry          Category?          @relation(fields: [industryId], references: [id])
+  currency          Currency           @relation(fields: [currencyCode], references: [code])
+  owner             User               @relation("ClientOwner", fields: [ownerId], references: [id])
+  contacts          Contact[]
+  leads             Lead[]
+  projects          Project[]
+  quotes            Quote[]
+  invoices          Invoice[]
+  payments          Payment[]
+  expenses          Expense[]
+  campaigns         Campaign[]
+  socialConnections SocialConnection[]
+  offers            Offer[]
+  webProperties     WebProperty[]
+  contentPosts      ContentPost[]
+  trackedLinks      TrackedLink[]
+  emailCampaigns    EmailCampaign[]
+  brandVoices       BrandVoice[]
+  blogPosts         BlogPost[]
+  audiences         Audience[]
+  onboardingSteps   OnboardingStep[]
+
+  @@unique([orgId, name])
+  @@index([orgId, status])
+  @@index([orgId, ownerId])
+}
+
+model Contact {
+  id          String   @id @default(cuid())
+  clientId    String
+  name        String
+  email       String?
+  phone       String?
+  designation String?
+  isPrimary   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+}
+
+enum NoteEntityType {
+  CLIENT
+  LEAD
+  PROJECT
+  TASK
+  INVOICE
+  QUOTE
+  CAMPAIGN
+  SUBSCRIPTION
+}
+
+model Note {
+  id         String         @id @default(cuid())
+  orgId      String
+  entityType NoteEntityType
+  entityId   String
+  authorId   String
+  body       String
+  createdAt  DateTime       @default(now())
+
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  author User         @relation("NoteAuthor", fields: [authorId], references: [id])
+
+  @@index([orgId, entityType, entityId])
+}
+
+model Lead {
+  id                String   @id @default(cuid())
+  orgId             String
+  name              String
+  company           String?
+  email             String?
+  phone             String?
+  website           String?
+  sourceId          String?
+  stageId           String
+  budgetMinor       BigInt?
+  currencyCode      String
+  message           String?
+  assignedToId      String?
+  convertedClientId String?
+  lostReason        String?
+  stageChangedAt    DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  org             Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  source          Category?     @relation(fields: [sourceId], references: [id])
+  stage           PipelineStage @relation(fields: [stageId], references: [id])
+  currency        Currency      @relation(fields: [currencyCode], references: [code])
+  convertedClient Client?       @relation(fields: [convertedClientId], references: [id])
+
+  @@index([orgId, stageId])
+  @@index([orgId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Delivery
+// ---------------------------------------------------------------------------
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+model Project {
+  id                   String        @id @default(cuid())
+  orgId                String
+  clientId             String
+  name                 String
+  summary              String?
+  status               ProjectStatus @default(PLANNING)
+  typeId               String?
+  ownerId              String
+  startDate            DateTime?
+  endDate              DateTime?
+  budgetMinor          BigInt?
+  currencyCode         String
+  hourlyRateMinor      BigInt?
+  retainerMonthlyMinor BigInt?
+  domainUrl            String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  org           Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client        Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  type          Category?        @relation(fields: [typeId], references: [id])
+  owner         User             @relation("ProjectOwner", fields: [ownerId], references: [id])
+  currency      Currency         @relation(fields: [currencyCode], references: [code])
+  members       ProjectMember[]
+  tasks         Task[]
+  timeEntries   TimeEntry[]
+  expenses      Expense[]
+  rankSnapshots RankSnapshot[]
+  siteAudits    SiteAudit[]
+  campaigns     Campaign[]
+  keywords      ProjectKeyword[]
+  contentPosts  ContentPost[]
+  blogPosts     BlogPost[]
+
+  @@index([orgId, status])
+  @@index([clientId])
+}
+
+model ProjectMember {
+  projectId String
+  userId    String
+  roleRefId String?
+  addedAt   DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleRef Role?   @relation(fields: [roleRefId], references: [id])
+
+  @@id([projectId, userId])
+}
+
+enum TaskStatus {
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  BLOCKED
+  DONE
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Task {
+  id               String       @id @default(cuid())
+  orgId            String
+  projectId        String
+  title            String
+  description      String?
+  status           TaskStatus   @default(TODO)
+  priority         TaskPriority @default(MEDIUM)
+  assigneeId       String?
+  dueDate          DateTime?
+  estimatedMinutes Int?
+  completedAt      DateTime?
+  serviceItemId    String?
+  sortOrder        Int          @default(0)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignee    User?        @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  serviceItem ServiceItem? @relation(fields: [serviceItemId], references: [id])
+  timeEntries TimeEntry[]
+
+  @@index([projectId, status])
+  @@index([orgId, assigneeId, status])
+}
+
+model TimeEntry {
+  id            String   @id @default(cuid())
+  orgId         String
+  projectId     String
+  taskId        String?
+  userId        String
+  date          DateTime
+  minutes       Int
+  billable      Boolean  @default(true)
+  rateMinor     BigInt?
+  invoiceLineId String?
+  description   String?
+  createdAt     DateTime @default(now())
+
+  org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task        Task?            @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  user        User             @relation(fields: [userId], references: [id])
+  invoiceLine InvoiceLineItem? @relation(fields: [invoiceLineId], references: [id])
+
+  @@index([orgId, projectId])
+  @@index([orgId, userId, date])
+  @@index([invoiceLineId])
+}
+
+model Expense {
+  id            String   @id @default(cuid())
+  orgId         String
+  projectId     String
+  clientId      String?
+  categoryId    String?
+  date          DateTime
+  amountMinor   BigInt
+  currencyCode  String
+  billable      Boolean  @default(true)
+  description   String?
+  invoiceLineId String?
+  createdAt     DateTime @default(now())
+
+  org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  client      Client?          @relation(fields: [clientId], references: [id])
+  category    Category?        @relation(fields: [categoryId], references: [id])
+  currency    Currency         @relation(fields: [currencyCode], references: [code])
+  invoiceLine InvoiceLineItem? @relation(fields: [invoiceLineId], references: [id])
+
+  @@index([orgId, projectId])
+  @@index([invoiceLineId])
+}
+
+// ---------------------------------------------------------------------------
+// Sales
+// ---------------------------------------------------------------------------
+
+enum UnitType {
+  HOUR
+  PIECE
+  MONTH
+  PROJECT
+  RETAINER
+}
+
+model ServiceItem {
+  id           String   @id @default(cuid())
+  orgId        String
+  categoryId   String?
+  code         String
+  name         String
+  description  String?
+  unit         UnitType @default(PIECE)
+  priceMinor   BigInt
+  currencyCode String
+  taxable      Boolean  @default(true)
+  taxRateId    String?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  org          Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  category     Category?         @relation(fields: [categoryId], references: [id])
+  currency     Currency          @relation(fields: [currencyCode], references: [code])
+  taxRate      TaxRate?          @relation(fields: [taxRateId], references: [id])
+  quoteLines   QuoteLineItem[]
+  invoiceLines InvoiceLineItem[]
+  tasks        Task[]
+
+  @@unique([orgId, code])
+  @@index([orgId, active])
+}
+
+enum QuoteStatus {
+  DRAFT
+  SENT
+  VIEWED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  CONVERTED
+}
+
+model Quote {
+  id                 String      @id @default(cuid())
+  orgId              String
+  clientId           String
+  number             String
+  status             QuoteStatus @default(DRAFT)
+  currencyCode       String
+  issueDate          DateTime    @default(now())
+  validUntil         DateTime?
+  discountMinor      BigInt      @default(0)
+  subtotalMinor      BigInt      @default(0)
+  taxMinor           BigInt      @default(0)
+  totalMinor         BigInt      @default(0)
+  terms              String?
+  notes              String?
+  approvedById       String?
+  approvedAt         DateTime?
+  convertedInvoiceId String?     @unique
+  createdById        String
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  org              Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client           Client          @relation(fields: [clientId], references: [id])
+  currency         Currency        @relation(fields: [currencyCode], references: [code])
+  approvedBy       User?           @relation("QuoteApprover", fields: [approvedById], references: [id])
+  createdBy        User            @relation("QuoteCreator", fields: [createdById], references: [id])
+  lines            QuoteLineItem[]
+  convertedInvoice Invoice?        @relation("InvoiceConvertedFromQuote", fields: [convertedInvoiceId], references: [id])
+  createdInvoices  Invoice[]       @relation("QuoteSource")
+
+  @@unique([orgId, number])
+  @@index([orgId, status])
+  @@index([clientId])
+}
+
+model QuoteLineItem {
+  id             String  @id @default(cuid())
+  quoteId        String
+  serviceItemId  String?
+  description    String
+  qtyHundredths  Int
+  unitPriceMinor BigInt
+  discountBps    Int     @default(0)
+  taxRateId      String?
+  taxBps         Int     @default(0)
+  lineTotalMinor BigInt
+  sortOrder      Int     @default(0)
+
+  quote        Quote             @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  serviceItem  ServiceItem?      @relation(fields: [serviceItemId], references: [id])
+  taxRate      TaxRate?          @relation(fields: [taxRateId], references: [id])
+  invoiceLines InvoiceLineItem[]
+
+  @@index([quoteId])
+}
+
+enum InvoicePartyKind {
+  CLIENT
+  TENANT
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  SENT
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+}
+
+model Invoice {
+  id                 String           @id @default(cuid())
+  orgId              String
+  partyKind          InvoicePartyKind @default(CLIENT)
+  clientId           String?
+  tenantId           String?
+  subscriptionId     String?
+  number             String
+  status             InvoiceStatus    @default(DRAFT)
+  currencyCode       String
+  issueDate          DateTime         @default(now())
+  dueDate            DateTime?
+  discountMinor      BigInt           @default(0)
+  subtotalMinor      BigInt           @default(0)
+  taxMinor           BigInt           @default(0)
+  totalMinor         BigInt           @default(0)
+  paidMinor          BigInt           @default(0)
+  taxBreakdown       Json?
+  notes              String?
+  terms              String?
+  quoteId            String?
+  createdByUserId    String
+  voidedAt           DateTime?
+  voidReason         String?
+  sentAt             DateTime?
+  checkoutToken      String?          @unique
+  gatewayCheckoutRef String? // provider-side checkout/link id for reconciliation
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  org              Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  tenant           Organization?     @relation("TenantBilling", fields: [tenantId], references: [id])
+  client           Client?           @relation(fields: [clientId], references: [id])
+  subscription     Subscription?     @relation(fields: [subscriptionId], references: [id])
+  currency         Currency          @relation(fields: [currencyCode], references: [code])
+  quote            Quote?            @relation("QuoteSource", fields: [quoteId], references: [id])
+  convertedFrom    Quote?            @relation("InvoiceConvertedFromQuote")
+  createdBy        User              @relation("InvoiceCreator", fields: [createdByUserId], references: [id])
+  lines            InvoiceLineItem[]
+  payments         Payment[]
+  offerRedemptions OfferRedemption[]
+
+  @@unique([orgId, number])
+  @@index([orgId, status, dueDate])
+  @@index([clientId])
+  @@index([tenantId, status])
+  @@index([partyKind, status])
+  @@index([subscriptionId])
+}
+
+enum InvoiceLineSourceType {
+  MANUAL
+  QUOTE
+  TIME
+  EXPENSE
+  SUBSCRIPTION
+}
+
+model InvoiceLineItem {
+  id                String                @id @default(cuid())
+  invoiceId         String
+  serviceItemId     String?
+  sourceType        InvoiceLineSourceType @default(MANUAL)
+  sourceQuoteLineId String?
+  description       String
+  qtyHundredths     Int
+  unitPriceMinor    BigInt
+  discountBps       Int                   @default(0)
+  taxRateId         String?
+  taxBps            Int                   @default(0)
+  lineTotalMinor    BigInt
+  sortOrder         Int                   @default(0)
+
+  invoice     Invoice        @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  serviceItem ServiceItem?   @relation(fields: [serviceItemId], references: [id])
+  quoteLine   QuoteLineItem? @relation(fields: [sourceQuoteLineId], references: [id])
+  taxRate     TaxRate?       @relation(fields: [taxRateId], references: [id])
+  timeEntries TimeEntry[]
+  expenses    Expense[]
+
+  @@index([invoiceId])
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  UPI
+  CARD
+  NETBANKING
+  WALLET
+  CASH
+  CHEQUE
+  GATEWAY
+  ADJUSTMENT
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  orgId             String
+  invoiceId         String?
+  clientId          String?
+  number            String
+  method            PaymentMethod
+  status            PaymentStatus @default(COMPLETED)
+  amountMinor       BigInt
+  refundedMinor     BigInt        @default(0)
+  currencyCode      String
+  paidAt            DateTime
+  reference         String?
+  note              String?
+  gatewayConfigId   String?
+  gatewayPaymentRef String?
+  recordedByUserId  String
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  org        Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  invoice    Invoice?       @relation(fields: [invoiceId], references: [id])
+  client     Client?        @relation(fields: [clientId], references: [id])
+  currency   Currency       @relation(fields: [currencyCode], references: [code])
+  gateway    GatewayConfig? @relation(fields: [gatewayConfigId], references: [id])
+  recordedBy User           @relation("PaymentRecorder", fields: [recordedByUserId], references: [id])
+  refunds    Refund[]
+
+  @@unique([orgId, number])
+  @@index([invoiceId])
+  @@index([orgId, paidAt])
+  @@index([gatewayPaymentRef])
+}
+
+enum RefundStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+model Refund {
+  id               String       @id @default(cuid())
+  orgId            String
+  paymentId        String
+  amountMinor      BigInt
+  status           RefundStatus @default(PENDING)
+  reason           String?
+  gatewayRefundRef String?
+  processedAt      DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  payment Payment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+}
+
+// ---------------------------------------------------------------------------
+// SaaS subscription billing
+// ---------------------------------------------------------------------------
+
+enum PlanInterval {
+  MONTH
+  QUARTER
+  YEAR
+}
+
+enum PlanStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
+model Plan {
+  id           String       @id @default(cuid())
+  code         String       @unique
+  name         String
+  description  String?
+  priceMinor   BigInt
+  currencyCode String
+  interval     PlanInterval
+  trialDays    Int          @default(0)
+  maxSeats     Int
+  maxClients   Int
+  maxProjects  Int
+  maxKeywords  Int
+  status       PlanStatus   @default(DRAFT)
+  sortOrder    Int          @default(0)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  currency      Currency       @relation(fields: [currencyCode], references: [code])
+  features      PlanFeature[]
+  subscriptions Subscription[]
+
+  @@index([status, sortOrder])
+}
+
+enum FeatureCode {
+  RANK_TRACKING
+  SITE_AUDIT
+  BACKLINK_INDEX
+  CAMPAIGN_METRICS
+  TIME_TRACKING
+  EXPENSE_TRACKING
+  QUOTES
+  INVOICING
+  ONLINE_COLLECT
+  REPORT_BUILDER
+  API_ACCESS
+  WHITE_LABEL
+  AI_PREMIUM
+}
+
+model PlanFeature {
+  planId      String
+  featureCode FeatureCode
+  limitValue  BigInt?
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@id([planId, featureCode])
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  GRACE_PERIOD
+  CANCELLED
+  EXPIRED
+}
+
+enum BillingCycleStatus {
+  PENDING
+  INVOICED
+  PAID
+  FAILED
+  ABANDONED
+}
+
+model Subscription {
+  id                 String             @id @default(cuid())
+  orgId              String
+  planId             String
+  status             SubscriptionStatus @default(TRIALING)
+  seats              Int                @default(1)
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  trialEndsAt        DateTime?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  cancelledAt        DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  org      Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  plan     Plan           @relation(fields: [planId], references: [id])
+  invoices Invoice[]
+  cycles   BillingCycle[]
+
+  @@index([orgId, status])
+  @@index([status, currentPeriodEnd])
+}
+
+model BillingCycle {
+  id             String             @id @default(cuid())
+  subscriptionId String
+  periodStart    DateTime
+  periodEnd      DateTime
+  status         BillingCycleStatus @default(PENDING)
+  invoiceId      String?
+  attempts       Int                @default(0)
+  lastAttemptAt  DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, periodStart])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Payment gateways (pluggable providers; encrypted credentials)
+// ---------------------------------------------------------------------------
+
+enum GatewayMode {
+  SANDBOX
+  LIVE
+}
+
+enum GatewayScope {
+  PLATFORM
+  ORGANIZATION
+}
+
+model GatewayConfig {
+  id               String       @id @default(cuid())
+  providerCode     String
+  scope            GatewayScope
+  orgId            String?
+  mode             GatewayMode  @default(SANDBOX)
+  label            String
+  credentialEnc    Json
+  webhookSecretEnc Json?
+  publicMeta       Json?
+  active           Boolean      @default(false)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  org      Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@index([scope, active])
+  @@index([orgId])
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  IGNORED_DUPLICATE
+  IGNORED_UNKNOWN
+}
+
+model WebhookEvent {
+  id              String        @id @default(cuid())
+  gatewayConfigId String?
+  providerCode    String
+  externalId      String
+  type            String
+  payload         Json
+  signature       String?
+  status          WebhookStatus @default(RECEIVED)
+  error           String?
+  receivedAt      DateTime      @default(now())
+  processedAt     DateTime?
+
+  @@unique([providerCode, externalId])
+  @@index([status, receivedAt])
+}
+
+// ---------------------------------------------------------------------------
+// SEO tools
+// ---------------------------------------------------------------------------
+
+enum DeviceType {
+  DESKTOP
+  MOBILE
+}
+
+enum SnapshotSource {
+  MANUAL
+  CSV_IMPORT
+  PROVIDER
+  DEMO
+}
+
+model Keyword {
+  id         String     @id @default(cuid())
+  orgId      String
+  term       String
+  normalized String
+  locationId String?
+  device     DeviceType @default(DESKTOP)
+  targetUrl  String?
+  notes      String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  org       Organization     @relation("KeywordOrg", fields: [orgId], references: [id], onDelete: Cascade)
+  location  GeoLocation?     @relation("KeywordLocation", fields: [locationId], references: [id])
+  snapshots RankSnapshot[]
+  projects  ProjectKeyword[]
+
+  @@index([orgId, term])
+}
+
+model ProjectKeyword {
+  projectId String
+  keywordId String
+  addedAt   DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  keyword Keyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, keywordId])
+}
+
+model RankSnapshot {
+  id         String         @id @default(cuid())
+  orgId      String
+  keywordId  String
+  projectId  String?
+  capturedOn DateTime
+  position   Int
+  trackedUrl String?
+  source     SnapshotSource @default(MANUAL)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  keyword Keyword      @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+  project Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@unique([keywordId, capturedOn])
+  @@index([orgId, capturedOn])
+}
+
+enum BacklinkStatus {
+  LIVE
+  LOST
+  BROKEN
+  REMOVED
+}
+
+model Backlink {
+  id              String         @id @default(cuid())
+  orgId           String
+  projectId       String?
+  sourceUrl       String
+  targetUrl       String
+  anchorText      String?
+  dofollow        Boolean        @default(true)
+  domainAuthority Int?
+  status          BacklinkStatus @default(LIVE)
+  firstSeenAt     DateTime       @default(now())
+  lastCheckedAt   DateTime?
+  notes           String?
+  updatedAt       DateTime       @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, sourceUrl, targetUrl])
+  @@index([orgId, status])
+}
+
+enum AuditStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum Severity {
+  CRITICAL
+  ERROR
+  WARNING
+  NOTICE
+  PASS
+}
+
+model SiteAudit {
+  id            String      @id @default(cuid())
+  orgId         String
+  projectId     String?
+  url           String
+  status        AuditStatus @default(QUEUED)
+  score         Int?
+  passedCount   Int         @default(0)
+  issueCount    Int         @default(0)
+  startedAt     DateTime    @default(now())
+  finishedAt    DateTime?
+  error         String?
+  summary       Json?
+  requestedById String
+
+  org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  project     Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  requestedBy User             @relation("AuditRequester", fields: [requestedById], references: [id])
+  issues      SiteAuditIssue[]
+
+  @@index([orgId, startedAt])
+}
+
+model SiteAuditIssue {
+  id        String   @id @default(cuid())
+  auditId   String
+  checkCode String
+  category  String
+  severity  Severity
+  message   String
+  detail    Json?
+
+  audit SiteAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@index([auditId, severity])
+}
+
+// ---------------------------------------------------------------------------
+// Campaigns & metrics
+// ---------------------------------------------------------------------------
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  LIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+model Campaign {
+  id             String            @id @default(cuid())
+  orgId          String
+  projectId      String?
+  clientId       String? // null = workspace's own house campaign (self-serve)
+  channelId      String? // legacy category channel (kept nullable for history)
+  mediaChannelId String? // primary channel entity
+  audienceId     String? // default target base for the campaign
+  name           String
+  status         CampaignStatus    @default(DRAFT)
+  lifecycle      CampaignLifecycle @default(DRAFT)
+  composition    Json?
+  plannedAt      DateTime?
+  approvedAt     DateTime?
+  launchedAt     DateTime?
+  closedAt       DateTime?
+  learnedAt      DateTime?
+  startDate      DateTime?
+  endDate        DateTime?
+  budgetMinor    BigInt?
+  currencyCode   String
+  externalRef    String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  org            Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  project        Project?          @relation(fields: [projectId], references: [id])
+  client         Client?           @relation(fields: [clientId], references: [id])
+  channel        Category?         @relation(fields: [channelId], references: [id])
+  mediaChannel   Channel?          @relation("CampaignPrimaryChannel", fields: [mediaChannelId], references: [id])
+  audience       Audience?         @relation("CampaignAudience", fields: [audienceId], references: [id])
+  currency       Currency          @relation(fields: [currencyCode], references: [code])
+  metrics        CampaignMetric[]
+  contentPosts   ContentPost[]
+  trackedLinks   TrackedLink[]
+  emailCampaigns EmailCampaign[]
+  adCreatives    AdCreative[]
+  flights        CampaignFlight[]
+  offersLink     CampaignOffer[]
+  triggers       ScheduleTrigger[]
+
+  @@index([orgId, status])
+  @@index([clientId])
+}
+
+model CampaignMetric {
+  id           String   @id @default(cuid())
+  campaignId   String
+  orgId        String
+  date         DateTime
+  impressions  BigInt   @default(0)
+  clicks       BigInt   @default(0)
+  costMinor    BigInt   @default(0)
+  conversions  BigInt   @default(0)
+  revenueMinor BigInt   @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  campaign Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, date])
+  @@index([orgId, date])
+}
+
+// ---------------------------------------------------------------------------
+// Reporting, monitoring & audit trail
+// ---------------------------------------------------------------------------
+
+enum ReportModule {
+  REVENUE
+  CLIENTS
+  SEO_RANKINGS
+  CAMPAIGNS
+  TIMESHEETS
+  TEAM
+}
+
+enum ReportSchedule {
+  NONE
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+model Report {
+  id              String         @id @default(cuid())
+  orgId           String
+  name            String
+  module          ReportModule
+  definition      Json
+  schedule        ReportSchedule @default(NONE) // legacy; superseded by patternId when set
+  patternId       String? // UTP temporal asset — the report's recurring schedule
+  lastScheduledAt DateTime? // last materialized slot the cron executed for
+  nextScheduledAt DateTime? // monitoring: upcoming run (computed, cron-maintained)
+  createdById     String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  org     Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  pattern TemporalPattern? @relation(fields: [patternId], references: [id], onDelete: SetNull)
+  runs    ReportRun[]
+
+  @@index([orgId, module])
+  @@index([nextScheduledAt])
+}
+
+model ReportRun {
+  id                String   @id @default(cuid())
+  reportId          String
+  ranAt             DateTime @default(now())
+  triggeredByUserId String
+  resultSummary     Json
+
+  report      Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  triggeredBy User   @relation(fields: [triggeredByUserId], references: [id])
+
+  @@index([reportId, ranAt])
+}
+
+model ActivityLog {
+  id         String          @id @default(cuid())
+  orgId      String?
+  userId     String?
+  action     String
+  entityType NoteEntityType?
+  entityId   String?
+  meta       Json?
+  ip         String?
+  createdAt  DateTime        @default(now())
+
+  org  Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User?         @relation(fields: [userId], references: [id])
+
+  @@index([orgId, createdAt])
+  @@index([orgId, entityType, entityId])
+  @@index([action])
+}
+
+model RateLimitBucket {
+  id           String   @id @default(cuid())
+  bucketKey    String   @unique
+  tokens       Float
+  maxTokens    Float
+  refillPerSec Float
+  updatedAt    DateTime @updatedAt
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  valueType String   @default("json")
+  updatedAt DateTime @updatedAt
+}
+
+// ===========================================================================
+// MARKETING EXECUTION SUITE
+// ===========================================================================
+
+// --- Social channels & connections ----------------------------------------
+
+enum SocialConnectionStatus {
+  CONNECTED
+  TOKEN_EXPIRED
+  ERROR
+  DISCONNECTED
+}
+
+model SocialAppConfig {
+  id           String @id @default(cuid())
+  orgId        String
+  connectorKey String // → ConnectorTemplate.key (soft cross-module ref)
+
+  clientId        String
+  clientSecretEnc Json
+  scopes          String[]
+
+  // Optional protocol overrides — empty = the adapter's built-in provider
+  // defaults. Filled in = version bumps, regional hosts or API gateways
+  // become configuration instead of code changes.
+  authorizeUrl String?
+  tokenUrl     String?
+  apiBase      String?
+  extraHeaders Json? // { "Header": "value" } string map merged into API calls
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, connectorKey])
+  @@index([orgId, active])
+}
+
+model SocialConnection {
+  id                String                 @id @default(cuid())
+  orgId             String
+  clientId          String?
+  connectorKey      String // → ConnectorTemplate.key (soft cross-module ref)
+  externalAccountId String
+  handle            String
+  displayName       String?
+  profilePictureUrl String?
+  accessTokenEnc    Json
+  refreshTokenEnc   Json?
+  tokenExpiresAt    DateTime?
+  scopes            String[]
+  status            SocialConnectionStatus @default(CONNECTED)
+  lastError         String?
+  lastCheckedAt     DateTime?
+  connectedById     String
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  org     Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client  Client?         @relation(fields: [clientId], references: [id])
+  targets ContentTarget[]
+
+  @@unique([orgId, connectorKey, externalAccountId])
+  @@index([orgId, status])
+}
+
+model OAuthPending {
+  id           String    @id @default(cuid())
+  orgId        String
+  connectorKey String
+  stateHash    String    @unique
+  verifierEnc  Json?
+  redirectTo   String?
+  userId       String
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([expiresAt])
+}
+
+// --- Content & scheduling ---------------------------------------------------
+
+enum ContentPostStatus {
+  DRAFT
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  PARTIALLY_PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+enum ContentTargetStatus {
+  PENDING
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  SKIPPED
+}
+
+model ContentPost {
+  id           String            @id @default(cuid())
+  orgId        String
+  clientId     String?
+  projectId    String?
+  campaignId   String?
+  title        String
+  body         String
+  linkUrl      String?
+  media        Json? // [{ url, alt }] — publicly reachable media URLs
+  tags         String[]
+  hashtags     String[]
+  stage        ContentStage      @default(IDEATION)
+  kindId       String?
+  customFields Json?
+  status       ContentPostStatus @default(DRAFT)
+  source       PublishSource     @default(MANUAL)
+  createdById  String
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  org       Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client    Client?         @relation(fields: [clientId], references: [id])
+  project   Project?        @relation(fields: [projectId], references: [id])
+  campaign  Campaign?       @relation(fields: [campaignId], references: [id])
+  kind      ContentKind?    @relation(fields: [kindId], references: [id])
+  createdBy User            @relation("ContentCreator", fields: [createdById], references: [id])
+  targets   ContentTarget[]
+
+  @@index([orgId, status, updatedAt])
+}
+
+model ContentTarget {
+  id             String              @id @default(cuid())
+  postId         String
+  connectionId   String
+  orgId          String
+  scheduledAt    DateTime
+  status         ContentTargetStatus @default(PENDING)
+  attempts       Int                 @default(0)
+  publishedAt    DateTime?
+  externalPostId String?
+  externalUrl    String?
+  lastError      String?
+  responseMeta   Json?
+
+  post       ContentPost         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  connection SocialConnection    @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  org        Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  logs       ContentPublishLog[]
+
+  @@unique([postId, connectionId])
+  @@index([status, scheduledAt])
+  @@index([orgId])
+}
+
+enum PublishOutcome {
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+model ContentPublishLog {
+  id       String         @id @default(cuid())
+  targetId String
+  outcome  PublishOutcome
+  message  String?
+  at       DateTime       @default(now())
+
+  target ContentTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@index([targetId])
+}
+
+// --- Tracked links & pixels ---------------------------------------------------
+
+model TrackedLink {
+  id          String   @id @default(cuid())
+  orgId       String
+  clientId    String?
+  campaignId  String?
+  code        String   @unique // short code for /go/{code}
+  label       String
+  destination String // absolute http(s)
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  utmTerm     String?
+  utmContent  String?
+  clicks      BigInt   @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client      Client?      @relation(fields: [clientId], references: [id])
+  campaign    Campaign?    @relation(fields: [campaignId], references: [id])
+  adCreatives AdCreative[]
+
+  @@index([orgId])
+}
+
+enum PixelPlatform {
+  GOOGLE_ANALYTICS
+  META_PIXEL
+  TIKTOK_PIXEL
+  LINKEDIN_INSIGHT
+  PINTEREST_TAG
+  CUSTOM
+}
+
+enum PixelPlacement {
+  HEAD
+  BODY_START
+}
+
+enum PropertyVerification {
+  UNVERIFIED
+  VERIFIED
+}
+
+model WebProperty {
+  id               String               @id @default(cuid())
+  orgId            String
+  clientId         String
+  name             String
+  domain           String // normalized host, unique per org
+  protocol         String               @default("https")
+  verification     PropertyVerification @default(UNVERIFIED)
+  ga4MeasurementId String?
+  notes            String?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  org    Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client Client          @relation(fields: [clientId], references: [id])
+  pixels TrackingPixel[]
+
+  @@unique([orgId, domain])
+  @@index([clientId])
+}
+
+model TrackingPixel {
+  id         String         @id @default(cuid())
+  propertyId String
+  orgId      String
+  platform   PixelPlatform // legacy/enum identity — template key mirror when resolved by platform
+  label      String
+  pixelId    String // tag/container id substituted into the template
+  snippet    String? // raw script (CUSTOM with no template)
+  placement  PixelPlacement @default(HEAD)
+  active     Boolean        @default(true)
+  templateId String?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  property WebProperty    @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  org      Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  template PixelTemplate? @relation(fields: [templateId], references: [id])
+
+  @@unique([propertyId, platform, label])
+  @@index([templateId])
+}
+
+// Tag snippet shapes as data: {{pixelId}} {{label}} {{domain}} {{name}}
+// {{propertyId}} placeholders. Ships with global defaults seeded; orgs create
+// their own (e.g. Microsoft Clarity, Hotjar) with zero code changes.
+model PixelTemplate {
+  id        String         @id @default(cuid())
+  orgId     String? // null = platform-global template
+  key       String // stable lookup key; for enum platforms it equals the PixelPlatform name
+  label     String
+  body      String // script/template markup with placeholders
+  placement PixelPlacement @default(HEAD)
+  docUrl    String?
+  active    Boolean        @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  org    Organization?   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  pixels TrackingPixel[]
+
+  @@unique([orgId, key])
+  @@index([active])
+}
+
+// --- Email marketing ------------------------------------------------------------
+
+enum SubscriberStatus {
+  PENDING_CONFIRM
+  SUBSCRIBED
+  UNSUBSCRIBED
+  BOUNCED
+}
+
+model MailingList {
+  id             String   @id @default(cuid())
+  orgId          String
+  name           String
+  description    String?
+  doubleOptIn    Boolean  @default(true)
+  welcomeSubject String?
+  welcomeBody    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org          Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  subscribers  Subscriber[]
+  campaigns    EmailCampaign[]
+  audienceRefs Audience[]      @relation("AudienceSourceList")
+
+  @@unique([orgId, name])
+}
+
+model Subscriber {
+  id              String           @id @default(cuid())
+  listId          String
+  orgId           String
+  email           String
+  emailNormalized String
+  name            String?
+  status          SubscriberStatus @default(PENDING_CONFIRM)
+  source          String? // e.g. "website", "import", "manual"
+  subscribedAt    DateTime?
+  unsubscribedAt  DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  list       MailingList  @relation(fields: [listId], references: [id], onDelete: Cascade)
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  emailSends EmailSend[]
+
+  @@unique([listId, emailNormalized])
+  @@index([orgId, status])
+}
+
+enum EmailCampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  CANCELLED
+  FAILED
+}
+
+model EmailCampaign {
+  id           String              @id @default(cuid())
+  orgId        String
+  listId       String
+  clientId     String?
+  campaignId   String?
+  subject      String
+  preheader    String?
+  bodyMarkdown String // simple markdown subset → html at send time
+  fromName     String?
+  fromEmail    String?
+  status       EmailCampaignStatus @default(DRAFT)
+  scheduledAt  DateTime?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  queuedCount  Int                 @default(0)
+  sentCount    Int                 @default(0)
+  failedCount  Int                 @default(0)
+  opensCount   Int                 @default(0)
+  testSentAt   DateTime?
+  createdById  String
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  list     MailingList  @relation(fields: [listId], references: [id])
+  client   Client?      @relation(fields: [clientId], references: [id])
+  campaign Campaign?    @relation(fields: [campaignId], references: [id])
+  sends    EmailSend[]
+
+  @@index([orgId, status])
+  @@index([status, scheduledAt])
+}
+
+enum EmailSendStatus {
+  PENDING
+  SENT
+  FAILED
+  OPENED
+}
+
+model EmailSend {
+  id           String          @id @default(cuid())
+  campaignId   String
+  subscriberId String
+  status       EmailSendStatus @default(PENDING)
+  attempts     Int             @default(0)
+  sentAt       DateTime?
+  openedAt     DateTime?
+  error        String?
+
+  campaign   EmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  subscriber Subscriber    @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, subscriberId])
+  @@index([campaignId, status])
+}
+
+// --- Relations into marketing suite (inverse sides) -------------------------
+
+// (added below via explicit fields)
+
+// ===========================================================================
+// AI CREATIVE STUDIO
+// ===========================================================================
+
+enum AiModelKind {
+  TEXT
+  IMAGE
+  AUDIO
+}
+
+// Provider configuration (org or platform scope, encrypted keys)
+model AiModelConfig {
+  id              String       @id @default(cuid())
+  orgId           String? // null = platform default
+  providerCode    String // openai | anthropic | google | demo
+  label           String
+  baseUrl         String? // OpenAI-compatible override (Groq/OpenRouter/Azure/Ollama…)
+  apiKeyEnc       Json
+  textModel       String       @default("gpt-4o-mini")
+  imageModel      String       @default("gpt-image-1")
+  audioModel      String       @default("tts-1")
+  defaultVoice    String       @default("alloy")
+  // Routing policy — pure data, no code branches:
+  // candidates are tried in (org-first, priority asc) order; a config whose
+  // requiredFeature is set is only eligible when the tenant's active plan
+  // includes that feature. null = freely available to every workspace.
+  priority        Int          @default(100)
+  requiredFeature FeatureCode?
+  active          Boolean      @default(false)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([active])
+  @@index([orgId])
+}
+
+enum PromptKind {
+  BLOG_OUTLINE
+  BLOG_DRAFT
+  AD_COPY
+  SOCIAL_CAPTION
+  VOICEOVER_SCRIPT
+  IMAGE_PROMPT
+  NEWSLETTER
+  KEYWORD_IDEAS
+}
+
+model PromptTemplate {
+  id        String     @id @default(cuid())
+  orgId     String? // null = global template, orgs can override
+  key       String // stable lookup key
+  kind      PromptKind
+  title     String
+  body      String // {{brandVoice}} {{audience}} {{topic}} {{keywords}} {{campaignName}} {{platform}} {{destination}} {{tone}} {{length}}
+  modelHint String?
+  active    Boolean    @default(true)
+  version   Int        @default(1)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, key])
+  @@index([kind, active])
+}
+
+model BrandVoice {
+  id             String   @id @default(cuid())
+  orgId          String
+  clientId       String?
+  name           String
+  tone           String // e.g. "confident, plain-spoken, zero jargon"
+  audience       String // persona description
+  vocabularyDo   String[] // preferred words/phrases
+  vocabularyDont String[]
+  bannedClaims   String? // compliance guardrail injected into prompts
+  sampleText     String? // few-shot style sample
+  isDefault      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client Client?      @relation(fields: [clientId], references: [id])
+
+  @@unique([orgId, name])
+}
+
+enum PublishSource {
+  MANUAL
+  STUDIO
+}
+
+enum GenerationKind {
+  BLOG_OUTLINE
+  BLOG_DRAFT
+  AD_COPY
+  SOCIAL_CAPTION
+  VOICEOVER_SCRIPT
+  IMAGE
+  NEWSLETTER
+  KEYWORD_IDEAS
+}
+
+enum GenerationStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum AiProvider {
+  OPENAI
+  ANTHROPIC
+  GOOGLE
+  DEMO
+}
+
+model GenerationJob {
+  id          String           @id @default(cuid())
+  orgId       String
+  kind        GenerationKind
+  status      GenerationStatus @default(PENDING)
+  provider    AiProvider
+  modelCode   String
+  templateKey String
+  input       Json // {topic, keywords, clientId, campaignId, …}
+  outputText  String?
+  outputJson  Json? // structured variants e.g. {ads:[{headline,primaryText,…}]}
+  outputUrl   String? // image/audio asset URL (served or remote)
+  tokensIn    Int              @default(0)
+  tokensOut   Int              @default(0)
+  error       String?
+  createdById String
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  finishedAt  DateTime?
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy   User         @relation("JobCreator", fields: [createdById], references: [id])
+  blogPosts   BlogPost[]
+  adCreatives AdCreative[]
+
+  @@index([orgId, kind, status])
+}
+
+enum BlogStatus {
+  DRAFT
+  IN_REVIEW
+  PUBLISHED
+  ARCHIVED
+}
+
+model BlogPost {
+  id              String     @id @default(cuid())
+  orgId           String
+  clientId        String?
+  projectId       String?
+  jobId           String?
+  title           String
+  slug            String
+  metaDescription String?
+  keywords        String[]
+  outline         Json?
+  bodyMarkdown    String
+  status          BlogStatus @default(DRAFT)
+  readingMinutes  Int        @default(1)
+  publishedAt     DateTime?
+  createdById     String
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  org       Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client    Client?        @relation(fields: [clientId], references: [id])
+  project   Project?       @relation(fields: [projectId], references: [id])
+  job       GenerationJob? @relation(fields: [jobId], references: [id])
+  createdBy User           @relation("BlogCreator", fields: [createdById], references: [id])
+
+  @@unique([orgId, slug])
+  @@index([orgId, status])
+}
+
+enum AdPlatform {
+  GOOGLE_SEARCH
+  GOOGLE_DISPLAY
+  META
+  LINKEDIN
+  YOUTUBE
+}
+
+enum AdStatus {
+  DRAFT
+  APPROVED
+  LIVE
+  PAUSED
+  ARCHIVED
+}
+
+model AdCreative {
+  id                String     @id @default(cuid())
+  orgId             String
+  campaignId        String
+  jobId             String?
+  platform          AdPlatform
+  status            AdStatus   @default(DRAFT)
+  variant           Int        @default(1)
+  headline          String
+  description       String?
+  primaryText       String?
+  callToAction      String?
+  destinationLinkId String? // tracked link used when this creative goes live
+  assetUrl          String? // image/audio from studio
+  voiceoverScript   String?
+  createdById       String
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  org         Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  campaign    Campaign       @relation(fields: [campaignId], references: [id])
+  job         GenerationJob? @relation(fields: [jobId], references: [id])
+  destination TrackedLink?   @relation(fields: [destinationLinkId], references: [id])
+  createdBy   User           @relation("AdCreator", fields: [createdById], references: [id])
+
+  @@index([campaignId, status])
+}
+
+// ===========================================================================
+// PLATFORM HARDENING
+// ===========================================================================
+
+model IdempotencyRecord {
+  id        String   @id @default(cuid())
+  orgId     String
+  key       String
+  endpoint  String
+  bodyHash  String
+  status    Int?
+  response  Json?
+  inFlight  Boolean  @default(true)
+  createdBy String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, key])
+  @@index([expiresAt])
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  orgId     String
+  name      String
+  color     String   @default("zinc")
+  createdAt DateTime @default(now())
+
+  org    Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  linked ResourceTag[]
+
+  @@unique([orgId, name])
+}
+
+model ResourceTag {
+  tagId      String
+  orgId      String
+  entityType NoteEntityType
+  entityId   String
+  createdAt  DateTime       @default(now())
+
+  tag Tag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([tagId, entityType, entityId])
+  @@index([orgId, entityType, entityId])
+}
+
+// ===========================================================================
+// MEDIA CHANNELS, AUDIENCES (target bases), CALENDAR (flights)
+// ===========================================================================
+
+enum ChannelKind {
+  SEARCH
+  SOCIAL
+  DISPLAY
+  VIDEO
+  EMAIL
+  WHATSAPP
+  SMS
+  AFFILIATE
+  ORGANIC
+  DIRECT_MAIL
+  MARKETPLACE
+}
+
+enum ChannelCostModel {
+  CPC
+  CPM
+  CPA
+  FLAT
+  FREE
+}
+
+model Channel {
+  id                 String           @id @default(cuid())
+  orgId              String? // null = platform default channel catalog
+  code               String // GOOGLE_ADS, META_ADS…
+  name               String
+  kind               ChannelKind
+  description        String?
+  costModel          ChannelCostModel @default(CPC)
+  capabilities       String[] // audience, scheduling, creative, tracking, publish
+  requiresConnection Boolean          @default(false) // readiness = live connection for this kind
+  connectorKey       String? // for kind=SOCIAL: which connector powers publishing here
+  utmMedium          String           @default("paid")
+  budgetCapMinor     BigInt? // org policy cap per flight
+  active             Boolean          @default(true)
+  sortOrder          Int              @default(0)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  org       Organization?     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  campaigns Campaign[]        @relation("CampaignPrimaryChannel")
+  triggers  ScheduleTrigger[]
+  flights   CampaignFlight[]
+
+  @@unique([orgId, code])
+  @@index([active, sortOrder])
+}
+
+enum AudienceKind {
+  CUSTOMER_LIST
+  PROSPECT_LIST
+  WEBSITE_VISITORS
+  SOCIAL_FOLLOWERS
+  EVENT_ATTENDEES
+  LOOKALIKE_SEED
+  SEGMENT
+}
+
+enum AudienceSource {
+  CSV_UPLOAD
+  MANUAL
+  MAILING_LIST_REF
+  FORM_IMPORT
+}
+
+enum AudienceStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum ConsentStatus {
+  OPT_IN
+  IMPORTED_LEGACY
+  EXPIRED
+}
+
+model Audience {
+  id           String         @id @default(cuid())
+  orgId        String
+  clientId     String?
+  name         String
+  description  String?
+  kind         AudienceKind   @default(CUSTOMER_LIST)
+  source       AudienceSource @default(MANUAL)
+  status       AudienceStatus @default(ACTIVE)
+  sourceListId String? // when source=MAILING_LIST_REF
+  criteria     Json? // for SEGMENT: {tag, clientId…} resolved at send time
+  createdById  String
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  org        Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client     Client?          @relation(fields: [clientId], references: [id])
+  sourceList MailingList?     @relation("AudienceSourceList", fields: [sourceListId], references: [id])
+  members    AudienceMember[]
+  segments   Segment[]
+  flights    CampaignFlight[]
+  campaigns  Campaign[]       @relation("CampaignAudience")
+
+  @@unique([orgId, name])
+  @@index([orgId, status])
+}
+
+model AudienceMember {
+  id              String        @id @default(cuid())
+  audienceId      String
+  orgId           String
+  identityKey     String // sha256 of normalized email|phone|externalId
+  email           String?
+  emailNormalized String?
+  phone           String?
+  name            String?
+  company         String?
+  tags            String[]
+  consent         ConsentStatus @default(IMPORTED_LEGACY)
+  customFields    Json?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  audience   Audience           @relation(fields: [audienceId], references: [id], onDelete: Cascade)
+  org        Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  identities AudienceIdentity[]
+
+  @@unique([audienceId, identityKey])
+  @@index([orgId])
+}
+
+enum FlightStatus {
+  DRAFT
+  APPROVED
+  LIVE
+  PAUSED
+  ENDED
+  CANCELLED
+}
+
+model CampaignFlight {
+  id             String       @id @default(cuid())
+  campaignId     String
+  orgId          String
+  channelId      String
+  audienceId     String?
+  patternId      String? // UTP temporal asset consumed for cadence (supersedes legacy cadence JSON)
+  startsAt       DateTime
+  endsAt         DateTime
+  timezone       String       @default("Asia/Kolkata")
+  budgetMinor    BigInt?
+  cadence        Json? // { days:[1,3,5], time:"10:00" } — social slot materializer
+  status         FlightStatus @default(DRAFT)
+  notes          String?
+  slotsGenerated Int          @default(0)
+  createdById    String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  campaign Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  org      Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  channel  Channel          @relation(fields: [channelId], references: [id])
+  audience Audience?        @relation(fields: [audienceId], references: [id])
+  pattern  TemporalPattern? @relation(fields: [patternId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, startsAt])
+  @@index([campaignId])
+  @@index([status, startsAt, endsAt])
+}
+
+// ===========================================================================
+// CONNECTOR TEMPLATES — social/ad platforms as data, not code
+// ===========================================================================
+
+enum ConnectorProtocol {
+  OAUTH2_CODE // standard authorization-code (config: token/me/publish endpoints)
+  OAUTH2_PKCE // authorization-code + PKCE
+  BUILTIN // implemented by a code adapter (special OAuth flows); endpoints still configurable
+}
+
+model ConnectorTemplate {
+  id           String            @id @default(cuid())
+  orgId        String? // null = global (platform-shipped) catalog
+  key          String // lowercase unique: facebook, x, linkedin, mastodon, threads…
+  name         String
+  protocol     ConnectorProtocol @default(OAUTH2_CODE)
+  capabilities String[] // publish, read_metrics, direct_messages…
+  authorizeUrl String?
+  tokenUrl     String?
+  apiBase      String?
+  scopes       String[]
+  // endpoint templates + response field mappings for the generic engine:
+  // { mePath, publishPath, idPath:"data.id", handlePath:"data.username",
+  //   picturePath, accessTokenPath:"access_token", refreshTokenPath,
+  //   expiresInPath, authStyle:"basic"|"body", publishBody:"{"text":"{{text}}"}",
+  //   meHeaders:{Authorization:"Bearer {token}"}, externalUrlPath }
+  config       Json
+  docsUrl      String?
+  icon         String?
+  builtin      Boolean           @default(false) // true = code adapter exists (protocol quirks)
+  active       Boolean           @default(true)
+  sortOrder    Int               @default(0)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  org Organization? @relation("ConnectorTemplateOrg", fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, key])
+  @@index([active, sortOrder])
+}
+
+// ===========================================================================
+// UCOS BACKBONE: DOMAIN EVENTS, OFFERS, ORCHESTRATOR LIFECYCLE
+// ===========================================================================
+
+// --- Cross-domain event architecture (§13) ---------------------------------
+
+model DomainEvent {
+  id            String    @id @default(cuid())
+  orgId         String?
+  type          String // "campaign.launched", "offer.redeemed"…
+  aggregateType String
+  aggregateId   String
+  payload       Json
+  occurredAt    DateTime  @default(now())
+  deletedAt     DateTime? // outbox consumption marker (row retained = audit)
+
+  deliveries   EventDelivery[]
+  triggerFires TriggerFire[]
+
+  @@index([type, occurredAt])
+  @@index([orgId, occurredAt])
+  @@index([deletedAt])
+}
+
+model EventSubscription {
+  id         String   @id @default(cuid())
+  orgId      String? // null = platform subscriber
+  eventMatch String // exact type or prefix with "*" e.g. "offer.*"
+  url        String // https-only webhook target
+  label      String
+  secretEnc  Json
+  active     Boolean  @default(true)
+  lastError  String?
+  failCount  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  org    Organization?   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  events EventDelivery[]
+
+  @@index([active])
+}
+
+model EventDelivery {
+  id             String   @id @default(cuid())
+  eventId        String
+  subscriptionId String
+  status         String // PENDING | SENT | FAILED
+  attempts       Int      @default(0)
+  responseCode   Int?
+  error          String?
+  at             DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  event        DomainEvent       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  subscription EventSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, subscriptionId])
+  @@index([status, at])
+}
+
+// --- Offer domain (§10) ------------------------------------------------------
+
+enum OfferKind {
+  DISCOUNT
+  COUPON
+  PROMOTION
+  BUNDLE
+  REFERRAL
+  LOYALTY
+  MEMBERSHIP
+}
+
+enum OfferValueType {
+  PERCENT
+  AMOUNT
+  FREE_ITEM
+  POINTS
+}
+
+enum OfferStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PUBLISHED
+  ACTIVE
+  EXPIRED
+  ARCHIVED
+}
+
+model Offer {
+  id                String         @id @default(cuid())
+  orgId             String
+  clientId          String?
+  code              String
+  name              String
+  description       String?
+  kind              OfferKind      @default(COUPON)
+  valueType         OfferValueType @default(PERCENT)
+  value             Int // percent bps (1250 = 12.5%) or minor units or points
+  minSpendMinor     BigInt?
+  maxRedemptions    Int?
+  perRecipientLimit Int?           @default(1)
+  startsAt          DateTime?
+  endsAt            DateTime?
+  appliesTo         Json? // {serviceItemIds, clientIds, campaignIds}
+  terms             String?
+  status            OfferStatus    @default(DRAFT)
+  createdById       String
+  approvedById      String?
+  approvedAt        DateTime?
+  publishedAt       DateTime?
+  activatedAt       DateTime?
+  expiredAt         DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  org         Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client      Client?           @relation(fields: [clientId], references: [id])
+  redemptions OfferRedemption[]
+  campaigns   CampaignOffer[]
+
+  @@unique([orgId, code])
+  @@index([orgId, status])
+}
+
+model OfferRedemption {
+  id            String   @id @default(cuid())
+  offerId       String
+  orgId         String
+  recipientKey  String // sha256 email or client:<id> — caps & dedupe
+  email         String?
+  clientId      String?
+  invoiceId     String?
+  campaignId    String?
+  discountMinor BigInt
+  at            DateTime @default(now())
+
+  offer   Offer        @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  invoice Invoice?     @relation(fields: [invoiceId], references: [id])
+
+  @@index([offerId, recipientKey])
+}
+
+// --- Orchestrator lifecycle (§4) ---------------------------------------------
+
+enum CampaignLifecycle {
+  DRAFT
+  PLANNED
+  PENDING_APPROVAL
+  APPROVED
+  LIVE
+  CLOSED
+  LEARNED
+}
+
+model CampaignOffer {
+  campaignId String
+  offerId    String
+  addedById  String
+  addedAt    DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  offer    Offer    @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, offerId])
+}
+
+model LearningsSnapshot {
+  id          String   @id @default(cuid())
+  orgId       String
+  campaignId  String   @unique
+  summary     Json // {spendMinor, revenueMinor, roas, bestChannel, slots, redemptions}
+  learnings   Json // {wins[], watchouts[]} — deterministic rollups
+  createdById String
+  createdAt   DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+// ===========================================================================
+// UCOS DOMAIN COMPLETION: content lifecycle, identities/segments, triggers,
+// custom fields, onboarding
+// ===========================================================================
+
+enum ContentStage {
+  IDEATION
+  RESEARCH
+  PLANNING
+  CREATION
+  REVIEW
+  APPROVED
+  PUBLISHING
+  PUBLISHED
+  OPTIMIZING
+  ARCHIVED
+}
+
+model ContentKind {
+  id           String   @id @default(cuid())
+  orgId        String? // null = global registry entry
+  key          String // text, image, video, blog, email, audio, ar, vr, xr, hologram, digital_twin, interactive
+  name         String
+  capabilities String[] // publishTargets: social, blog, email, audio…
+  mediaType    String   @default("text")
+  active       Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  org   Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  posts ContentPost[]
+
+  @@unique([orgId, key])
+  @@index([active, sortOrder])
+}
+
+model AudienceIdentity {
+  id        String   @id @default(cuid())
+  memberId  String
+  orgId     String
+  type      String // email|phone|device|cookie|crm|external|social — open set
+  valueHash String
+  display   String?
+  createdAt DateTime @default(now())
+
+  member AudienceMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([memberId, type, valueHash])
+  @@index([orgId, type])
+}
+
+model Segment {
+  id          String   @id @default(cuid())
+  orgId       String
+  audienceId  String
+  name        String
+  description String?
+  predicate   Json // {consent?, tagIncludes?, tagExcludes?, hasIdentityType?, hasPhone?, customField?: {key, equals|notEquals|gt|lt}, q?}
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  audience Audience     @relation(fields: [audienceId], references: [id], onDelete: Cascade)
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([audienceId, name])
+}
+
+model ScheduleTrigger {
+  id           String    @id @default(cuid())
+  orgId        String
+  campaignId   String
+  channelId    String
+  eventMatch   String // "invoice.paid", "flight.*", "*"
+  delaySeconds Int       @default(3600)
+  maxFires     Int? // optional cap
+  firedCount   Int       @default(0)
+  active       Boolean   @default(true)
+  lastFiredAt  DateTime?
+  createdById  String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  org      Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  campaign Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  channel  Channel       @relation(fields: [channelId], references: [id])
+  fires    TriggerFire[]
+
+  @@index([orgId, active])
+}
+
+model TriggerFire {
+  triggerId String
+  eventId   String
+  firedAt   DateTime @default(now())
+  targetIds String[] // created ContentTarget ids
+
+  trigger ScheduleTrigger @relation(fields: [triggerId], references: [id], onDelete: Cascade)
+  event   DomainEvent     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@id([triggerId, eventId])
+}
+
+model CustomFieldDef {
+  id        String   @id @default(cuid())
+  orgId     String
+  entity    String // CLIENT | AUDIENCE_MEMBER | CONTENT_POST | OFFER | CAMPAIGN
+  key       String
+  label     String
+  type      String   @default("TEXT") // TEXT|NUMBER|DATE|BOOL|SELECT
+  options   String[]
+  required  Boolean  @default(false)
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, entity, key])
+  @@index([orgId, entity, active])
+}
+
+model OnboardingStep {
+  id        String    @id @default(cuid())
+  orgId     String
+  clientId  String
+  key       String
+  label     String
+  position  Int
+  done      Boolean   @default(false)
+  doneAt    DateTime?
+  doneById  String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  client Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, key])
+}
+
+model OnboardingTemplateStep {
+  id        String   @id @default(cuid())
+  orgId     String? // null = global default flow
+  key       String
+  label     String
+  position  Int
+  createdAt DateTime @default(now())
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, key])
+}
+
+// ===========================================================================
+// UNIVERSAL TEMPORAL PLATFORM (UTP) — Enterprise Calendar & Temporal OS
+// ---------------------------------------------------------------------------
+// Core principle: schedules are NOT attributes of events. Events, campaigns,
+// workflows, content, resources, clients, finance, notifications and agents
+// all CONSUME reusable Temporal Assets owned by this domain.
+//
+// Money analog: durations/offsets are integer seconds/minutes (no floats);
+// absolute instants are UTC DateTime; sub-second instants use BigInt micros.
+// Every mutation is versioned + appended to the immutable TemporalEventLog.
+// ===========================================================================
+
+enum TimeSystemKind {
+  LINEAR_OFFSET // civil time = UTC + fixed offset minutes
+  ROTATION // body-relative sol/day counting (e.g. Mars Sol — Darian-style)
+  CUSTOM // user-defined epoch + unit transform
+}
+
+model TimeSystem {
+  id               String         @id @default(cuid())
+  orgId            String? // null = global
+  code             String // UTC, IST, UTC+5:30, MARS_SOL, MOON_TIME, CUSTOM#...
+  name             String
+  kind             TimeSystemKind @default(LINEAR_OFFSET)
+  utcOffsetMinutes Int            @default(0)
+  unitSeconds      Int            @default(86400) // length of one "day"/sol in SI seconds
+  epochMicros      BigInt         @default(0) // system epoch in SI Unix micros (rotation/custom)
+  label            String // formatting hint: "sol", "day", "cycle"
+  active           Boolean        @default(true)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  patterns  TemporalPattern[]
+  calendars Calendar[]
+
+  @@unique([orgId, code])
+  @@index([active])
+}
+
+enum TemporalPatternType {
+  TIME
+  DATE
+  DATE_RANGE
+  TIME_RANGE
+  DURATION
+  WINDOW
+  TRIGGER
+  CONSTRAINT
+  DEPENDENCY
+  COMPOSITE
+}
+
+enum RecurrenceFreq {
+  NONE
+  SECONDLY
+  MINUTELY
+  HOURLY
+  DAILY
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+  CUSTOM
+}
+
+enum PatternStatus {
+  DRAFT
+  ACTIVE
+  DEPRECATED
+  ARCHIVED
+}
+
+model TemporalPattern {
+  id           String              @id @default(cuid())
+  orgId        String? // null = platform library asset
+  name         String
+  description  String?
+  type         TemporalPatternType @default(WINDOW)
+  freq         RecurrenceFreq      @default(NONE)
+  // Reusable temporal asset. spec: the declarative recurrence definition.
+  // { interval, byWeekDay:[0-6], byMonthDay:[], bySetPos, byMonth:[], until, count,
+  //   time:"09:00", durationMinutes, windowStart/windowEnd, setPos, weekStartsOn, monthPattern:"FIRST_MONDAY" }
+  spec         Json
+  dsl          String? // human/DSL source, e.g. "EVERY WEEKDAY 09:00"
+  timezone     String              @default("Asia/Kolkata")
+  timeSystemId String?
+  status       PatternStatus       @default(ACTIVE)
+  version      Int                 @default(1)
+  isLibrary    Boolean             @default(false)
+  createdById  String
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  org                  Organization?         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  timeSystem           TimeSystem?           @relation(fields: [timeSystemId], references: [id], onDelete: SetNull)
+  expressions          TemporalExpression[]
+  calendars            Calendar[]
+  events               ScheduledEvent[]
+  availabilityProfiles AvailabilityProfile[]
+  flights              CampaignFlight[]
+  reports              Report[]
+  triggers             TemporalTrigger[]
+
+  @@index([orgId, status])
+  @@index([isLibrary])
+}
+
+enum ExpressionStatus {
+  UNVALIDATED
+  VALID
+  INVALID
+  OPTIMIZED
+}
+
+model TemporalExpression {
+  id          String           @id @default(cuid())
+  orgId       String?
+  patternId   String
+  source      String // raw DSL text
+  // ast: compiler output. { type, anchor, offset, unit, recurrence:{...}, calendarMask, normalized }
+  ast         Json             @default("{}")
+  diagnostics Json             @default("[]") // validator messages [{level,code,message}]
+  // plan: execution plan (materialization strategy). { expansion:"bounded|streaming", stepSeconds, horizon }
+  plan        Json             @default("{}")
+  status      ExpressionStatus @default(UNVALIDATED)
+  checksum    String // sha256 of normalized source (idempotent compile)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  org     Organization?   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  pattern TemporalPattern @relation(fields: [patternId], references: [id], onDelete: Cascade)
+
+  @@unique([patternId, checksum])
+  @@index([orgId])
+}
+
+enum RangeKind {
+  ABSOLUTE
+  RELATIVE
+  ROLLING
+  EVENT_RELATIVE
+  RESOURCE_RELATIVE
+  OPEN_ENDED
+}
+
+model TemporalRange {
+  id            String    @id @default(cuid())
+  orgId         String?
+  name          String
+  kind          RangeKind @default(ABSOLUTE)
+  // A date range or time range asset. When relativeKind is set, start/end are
+  // computed from a reference instant; otherwise absoluteDate/absoluteTime win.
+  startDate     DateTime?
+  endDate       DateTime?
+  startTime     String? // "09:00"
+  endTime       String? // "18:00"
+  relativeDir   String? // BEFORE|AFTER|AROUND
+  relativeValue Int? // magnitude
+  relativeUnit  String? // SECONDS|MINUTES|HOURS|DAYS|WEEKS|MONTHS|QUARTERS|YEARS
+  allDay        Boolean   @default(true)
+  timezone      String    @default("Asia/Kolkata")
+  createdById   String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, kind])
+}
+
+enum ConstraintType {
+  BUSINESS_HOURS
+  WORKING_DAYS
+  HOLIDAY
+  COMPLIANCE
+  RESOURCE
+  CAPACITY
+  CUSTOM
+}
+
+model TemporalRule {
+  id          String         @id @default(cuid())
+  orgId       String?
+  name        String
+  type        ConstraintType
+  // params: { timezone, days:[0-6], windows:[{start,end}], holidayCalendarId,
+  //   maxMinutes, minGapMinutes, expression:"...", capacity }
+  params      Json
+  priority    Int            @default(100)
+  hard        Boolean        @default(true) // hard=>violation blocks; soft=>warning only
+  active      Boolean        @default(true)
+  isLibrary   Boolean        @default(false)
+  createdById String
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, type, active])
+}
+
+enum DependencyType {
+  FINISH_TO_START
+  START_TO_START
+  FINISH_TO_FINISH
+  START_TO_FINISH
+}
+
+enum DependencyScope {
+  EVENT
+  WORKFLOW
+}
+
+model TemporalDependency {
+  id        String          @id @default(cuid())
+  orgId     String
+  scope     DependencyScope @default(EVENT)
+  fromType  String // "event" | "workflow" | "campaign" | "task"
+  fromId    String
+  toType    String
+  toId      String
+  type      DependencyType  @default(FINISH_TO_START)
+  lagValue  Int             @default(0)
+  lagUnit   String          @default("HOURS") // MINUTES|HOURS|DAYS
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, fromType, fromId, toType, toId])
+  @@index([orgId, toType, toId])
+}
+
+enum CalendarKind {
+  PERSONAL
+  TEAM
+  RESOURCE
+  PROJECT
+  EVENT
+  CAMPAIGN
+  SYSTEM
+  FISCAL
+  MAINTENANCE
+  SHIFT
+}
+
+enum CalendarVisibility {
+  PRIVATE
+  INTERNAL
+  PUBLIC
+}
+
+model Calendar {
+  id            String             @id @default(cuid())
+  orgId         String
+  name          String
+  code          String // workspace-unique slug
+  kind          CalendarKind       @default(TEAM)
+  visibility    CalendarVisibility @default(INTERNAL)
+  timezone      String             @default("Asia/Kolkata")
+  timeSystemId  String?
+  color         String             @default("#6366f1")
+  description   String?
+  space         String? // organizational "Calendar Space" grouping
+  patternId     String? // default schedule asset consumed
+  shareTokens   String[]           @default([]) // active stateless-access tokens (booking links, ICS feeds) — revocable
+  ownerUserId   String?
+  retentionDays Int? // governance: 0/null = retain forever
+  archivedAt    DateTime?
+  createdById   String
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  org          Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  timeSystem   TimeSystem?           @relation(fields: [timeSystemId], references: [id], onDelete: SetNull)
+  pattern      TemporalPattern?      @relation(fields: [patternId], references: [id], onDelete: SetNull)
+  shares       CalendarShare[]
+  events       ScheduledEvent[]
+  appointments Appointment[]
+  slots        AppointmentSlot[]
+  resources    Resource[]
+  triggers     TemporalTrigger[]
+  availability AvailabilityProfile[]
+
+  @@unique([orgId, code])
+  @@index([orgId, kind, archivedAt])
+}
+
+enum PrincipalType {
+  USER
+  TEAM
+  ORGANIZATION
+  PUBLIC
+}
+
+enum SharePermission {
+  VIEW
+  SUGGEST
+  EDIT
+  MANAGE
+}
+
+model CalendarShare {
+  id            String          @id @default(cuid())
+  orgId         String
+  calendarId    String
+  principalType PrincipalType   @default(USER)
+  principalId   String // userId/teamId/orgId; "public" for PUBLIC
+  permission    SharePermission @default(VIEW)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calendar Calendar     @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  @@unique([calendarId, principalType, principalId])
+  @@index([orgId, principalId])
+}
+
+enum ScheduledEventType {
+  SINGLE
+  SERIES_MASTER
+  SERIES_OCCURRENCE
+}
+
+enum ScheduledEventStatus {
+  TENTATIVE
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum EventAttendeeKind {
+  USER
+  CLIENT
+  CONTACT
+  RESOURCE
+  TEAM
+}
+
+model ScheduledEvent {
+  id          String               @id @default(cuid())
+  orgId       String
+  calendarId  String
+  patternId   String? // consumes a TemporalPattern for SERIES_MASTER
+  rootEventId String? // series master id for occurrences
+  type        ScheduledEventType   @default(SINGLE)
+  title       String
+  description String?
+  status      ScheduledEventStatus @default(CONFIRMED)
+  allDay      Boolean              @default(false)
+  timezone    String               @default("Asia/Kolkata")
+  startsAt    DateTime
+  endsAt      DateTime
+  location    String?
+  capacity    Int                  @default(0) // 0 = unlimited
+  // metadata: open bag of temporal/consumer labels. { priority, tags, color, externalRef, consumer }
+  metadata    Json                 @default("{}")
+  // exceptions: materialization overrides. { skipped:[iso], moved:[{from,to}] }
+  overrides   Json                 @default("{}")
+  clientRef   String? // optional link into Client domain
+  createdById String
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  org          Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calendar     Calendar          @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  pattern      TemporalPattern?  @relation(fields: [patternId], references: [id], onDelete: SetNull)
+  occurrences  EventOccurrence[]
+  attendees    EventAttendee[]
+  appointments Appointment[]
+
+  @@index([orgId, calendarId, startsAt])
+  @@index([orgId, status, type])
+  @@index([patternId])
+}
+
+model EventOccurrence {
+  id         String               @id @default(cuid())
+  orgId      String
+  eventId    String
+  startsAt   DateTime
+  endsAt     DateTime
+  status     ScheduledEventStatus @default(CONFIRMED)
+  overridden Boolean              @default(false) // individual instance edited
+  exception  Boolean              @default(false) // added/changed vs generated series
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+
+  event ScheduledEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, startsAt])
+  @@index([orgId, startsAt])
+}
+
+enum AttendeeResponse {
+  NEEDS_ACTION
+  ACCEPTED
+  DECLINED
+  TENTATIVE
+}
+
+model EventAttendee {
+  id        String            @id @default(cuid())
+  orgId     String
+  eventId   String
+  kind      EventAttendeeKind @default(USER)
+  refId     String? // userId/clientId/etc
+  email     String?
+  name      String?
+  response  AttendeeResponse  @default(NEEDS_ACTION)
+  required  Boolean           @default(true)
+  createdAt DateTime          @default(now())
+
+  event ScheduledEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, eventId])
+}
+
+enum ResourceType {
+  ROOM
+  EQUIPMENT
+  VEHICLE
+  FACILITY
+  STUDIO
+  MACHINE
+  HUMAN
+  OTHER
+}
+
+model Resource {
+  id                    String       @id @default(cuid())
+  orgId                 String
+  calendarId            String?
+  name                  String
+  code                  String
+  type                  ResourceType @default(ROOM)
+  capacity              Int          @default(1) // how many concurrent units
+  location              String?
+  requiresApproval      Boolean      @default(false)
+  availabilityPatternId String? // temporal asset controlling open hours
+  // metadata: { costPerHourMinor, bufferMinutes, bookableMinDays, bookableMaxDays, skills }
+  metadata              Json         @default("{}")
+  active                Boolean      @default(true)
+  createdById           String
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  org      Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calendar Calendar?         @relation(fields: [calendarId], references: [id], onDelete: SetNull)
+  bookings ResourceBooking[]
+
+  @@unique([orgId, code])
+  @@index([orgId, type, active])
+}
+
+enum BookingStatus {
+  HELD
+  CONFIRMED
+  RELEASED
+  CANCELLED
+}
+
+model ResourceBooking {
+  id            String        @id @default(cuid())
+  orgId         String
+  resourceId    String
+  eventId       String?
+  appointmentId String?
+  quantity      Int           @default(1)
+  startsAt      DateTime
+  endsAt        DateTime
+  status        BookingStatus @default(CONFIRMED)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  resource Resource     @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  @@index([resourceId, status, startsAt, endsAt])
+  @@index([orgId])
+}
+
+enum AvailabilitySubjectType {
+  USER
+  TEAM
+  DEPARTMENT
+  RESOURCE
+  ORGANIZATION
+  CAPACITY
+}
+
+model AvailabilityProfile {
+  id            String                  @id @default(cuid())
+  orgId         String
+  calendarId    String?
+  subjectType   AvailabilitySubjectType
+  subjectId     String // userId/teamId/resourceId/orgId
+  patternId     String? // reusable temporal asset defining open windows
+  timezone      String                  @default("Asia/Kolkata")
+  capacity      Int                     @default(1)
+  effectiveFrom DateTime?
+  effectiveTo   DateTime?
+  active        Boolean                 @default(true)
+  createdById   String
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  org       Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calendar  Calendar?        @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  pattern   TemporalPattern? @relation(fields: [patternId], references: [id], onDelete: SetNull)
+  blackouts BlackoutWindow[]
+
+  @@index([orgId, subjectType, subjectId, active])
+}
+
+model BlackoutWindow {
+  id        String   @id @default(cuid())
+  orgId     String
+  profileId String
+  startsAt  DateTime
+  endsAt    DateTime
+  reason    String?
+  createdAt DateTime @default(now())
+
+  profile AvailabilityProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, startsAt, endsAt])
+}
+
+enum AppointmentStatus {
+  WAITLISTED
+  PENDING
+  CONFIRMED
+  CHECKED_IN
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+model Appointment {
+  id            String            @id @default(cuid())
+  orgId         String
+  calendarId    String
+  eventId       String?
+  occurrenceId  String?
+  resourceId    String?
+  referenceCode String            @unique // human booking ref
+  attendeeName  String
+  attendeeEmail String?
+  attendeePhone String?
+  attendeeRefId String? // contact/client id if known
+  service       String?
+  status        AppointmentStatus @default(PENDING)
+  startsAt      DateTime
+  endsAt        DateTime
+  timezone      String            @default("Asia/Kolkata")
+  waitlistPos   Int?
+  checkInAt     DateTime?
+  cancelReason  String?
+  // meta: { form, notes, consent, source }
+  meta          Json              @default("{}")
+  createdById   String
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  org      Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calendar Calendar          @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  event    ScheduledEvent?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  slots    AppointmentSlot[]
+
+  @@index([orgId, calendarId, startsAt])
+  @@index([orgId, status])
+}
+
+enum SlotStatus {
+  OPEN
+  HELD
+  BOOKED
+  BLOCKED
+  EXPIRED
+}
+
+model AppointmentSlot {
+  id            String     @id @default(cuid())
+  orgId         String
+  calendarId    String
+  appointmentId String?
+  resourceId    String?
+  startsAt      DateTime
+  endsAt        DateTime
+  capacity      Int        @default(1)
+  booked        Int        @default(0)
+  status        SlotStatus @default(OPEN)
+  holdExpiresAt DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calendar    Calendar     @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, calendarId, status, startsAt])
+}
+
+enum ShiftKind {
+  FIXED
+  ROTATING
+  ON_CALL
+  SPLIT
+  FLEXIBLE
+}
+
+model Shift {
+  id             String    @id @default(cuid())
+  orgId          String
+  name           String
+  code           String
+  kind           ShiftKind @default(FIXED)
+  startTime      String // "09:00"
+  endTime        String // "17:00"
+  crossDay       Boolean   @default(false)
+  breakMinutes   Int       @default(0)
+  patternId      String? // reuse temporal asset for rotation cadence
+  color          String    @default("#0ea5e9")
+  requiredSkills String[]
+  createdById    String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  org         Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  assignments ShiftAssignment[]
+
+  @@unique([orgId, code])
+}
+
+enum CoverageRole {
+  PRIMARY
+  SECONDARY
+  BACKUP
+  FLOAT
+}
+
+model ShiftAssignment {
+  id        String       @id @default(cuid())
+  orgId     String
+  shiftId   String
+  userId    String
+  startsAt  DateTime
+  endsAt    DateTime
+  role      CoverageRole @default(PRIMARY)
+  notes     String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  shift Shift        @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, userId, startsAt])
+  @@index([shiftId])
+}
+
+model CoverageRequirement {
+  id            String   @id @default(cuid())
+  orgId         String
+  departmentRef String? // teamId/space
+  dayOfWeek     Int      @default(0) // 0=Sun..6=Sat
+  startTime     String   @default("09:00")
+  endTime       String   @default("17:00")
+  requiredCount Int      @default(1)
+  skill         String?
+  timezone      String   @default("Asia/Kolkata")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, departmentRef, dayOfWeek, startTime, skill])
+}
+
+enum TriggerAnchorType {
+  ABSOLUTE
+  RELATIVE
+  EVENT_BEFORE
+  EVENT_AFTER
+  RESOURCE_AVAILABLE
+  CAPACITY_AVAILABLE
+  TEAM_AVAILABLE
+  ASTRONOMICAL
+  PLANETARY
+  CUSTOM
+}
+
+enum ConsumerType {
+  CAMPAIGN
+  WORKFLOW
+  SEO_REFRESH
+  CONTENT
+  CLIENT
+  NOTIFICATION
+  BILLING
+  RESOURCE
+  WORKFORCE
+  MONITORING
+  AI_AGENT
+  AUTOMATION
+  WEBHOOK
+}
+
+enum TemporalTriggerStatus {
+  ARMED
+  PAUSED
+  EXHAUSTED
+}
+
+model TemporalTrigger {
+  id           String                @id @default(cuid())
+  orgId        String
+  calendarId   String?
+  patternId    String? // recurring UTP asset this trigger rides on (supersedes one-shot anchors)
+  name         String
+  anchorType   TriggerAnchorType     @default(ABSOLUTE)
+  // anchor config: { at, offsetMinutes, unit, eventType, resourceId, astroEvent,
+  //   geoRef, timeSystemCode, dsl, consumerRef }
+  anchor       Json                  @default("{}")
+  consumerType ConsumerType          @default(WEBHOOK)
+  consumerRef  String? // subscriptionId/campaignId/etc
+  // retry: { maxAttempts, backoffSeconds, deadLetter }
+  retry        Json                  @default("{\"maxAttempts\":3,\"backoffSeconds\":60}")
+  dsl          String? // e.g. "AFTER EVENT(APPROVAL)+7D"
+  nextFireAt   DateTime?
+  lastFiredAt  DateTime?
+  maxFires     Int?
+  firedCount   Int                   @default(0)
+  status       TemporalTriggerStatus @default(ARMED)
+  createdById  String
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  org      Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calendar Calendar?             @relation(fields: [calendarId], references: [id], onDelete: SetNull)
+  pattern  TemporalPattern?      @relation(fields: [patternId], references: [id], onDelete: SetNull)
+  fires    TemporalTriggerFire[]
+
+  @@index([orgId, status, nextFireAt])
+}
+
+enum FireOutcome {
+  PENDING
+  SUCCESS
+  FAILED
+  RETRYING
+  DEAD_LETTER
+}
+
+model TemporalTriggerFire {
+  id        String      @id @default(cuid())
+  orgId     String
+  triggerId String
+  firedAt   DateTime    @default(now())
+  outcome   FireOutcome @default(PENDING)
+  attempts  Int         @default(1)
+  planId    String?
+  detail    Json        @default("{}")
+  error     String?
+
+  trigger TemporalTrigger @relation(fields: [triggerId], references: [id], onDelete: Cascade)
+
+  @@index([triggerId, firedAt])
+  @@index([orgId, outcome])
+}
+
+enum ExecutionStatus {
+  PLANNED
+  RUNNING
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+// Universal execution pipeline artifact: validation -> constraints ->
+// dependencies -> availability -> triggers -> planning -> execution -> target.
+model ExecutionPlan {
+  id           String          @id @default(cuid())
+  orgId        String
+  subjectType  String // "event"|"trigger"|"appointment"|"campaign"
+  subjectId    String
+  triggerId    String?
+  consumerType ConsumerType    @default(AUTOMATION)
+  consumerRef  String?
+  // steps: ordered [{stage, action, status, detail}]
+  steps        Json            @default("[]")
+  status       ExecutionStatus @default(PLANNED)
+  result       Json            @default("{}")
+  plannedAt    DateTime        @default(now())
+  executedAt   DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+  @@index([subjectType, subjectId])
+}
+
+enum VersionEntityType {
+  CALENDAR
+  PATTERN
+  RULE
+  EVENT
+  RESOURCE
+  APPOINTMENT
+  TRIGGER
+  TIME_SYSTEM
+  LIBRARY_TEMPLATE
+  FISCAL_CALENDAR
+  CONFIGURATION
+}
+
+// Immutable snapshot for governance: every meaningful change is versioned.
+model TemporalVersion {
+  id         String            @id @default(cuid())
+  orgId      String
+  entityType VersionEntityType
+  entityId   String
+  version    Int
+  snapshot   Json // full prior/current record state
+  change     String // action label, e.g. "calendar.updated"
+  summary    String?
+  actorId    String
+  createdAt  DateTime          @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, entityType, entityId, version])
+}
+
+// Append-only immutable temporal event store. Supports audit, compliance,
+// replay, time travel, analytics & forecasting. Never updated/deleted.
+model TemporalEventLog {
+  id            String   @id @default(cuid())
+  orgId         String
+  aggregateType String
+  aggregateId   String
+  seq           Int // per-aggregate monotonic sequence
+  type          String // ScheduleCreated, PatternCreated, AppointmentBooked, ConstraintViolated, ...
+  // payload: event body (post-image or delta)
+  payload       Json     @default("{}")
+  actorId       String?
+  at            DateTime @default(now())
+  version       Int      @default(1)
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([aggregateType, aggregateId, seq])
+  @@index([orgId, at])
+  @@index([orgId, type])
+}
+
+enum HolidayScope {
+  GLOBAL
+  ORGANIZATION
+}
+
+model HolidayCalendar {
+  id          String       @id @default(cuid())
+  orgId       String?
+  name        String
+  code        String // IN-2027, US-FEDERAL, RAMADAN, FISCAL-IN ...
+  scope       HolidayScope @default(ORGANIZATION)
+  country     String?
+  timezone    String       @default("Asia/Kolkata")
+  createdById String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  org     Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  entries Holiday[]
+
+  @@unique([orgId, code])
+  @@index([scope])
+}
+
+model Holiday {
+  id              String   @id @default(cuid())
+  orgId           String? // null for global calendars
+  calendarId      String
+  date            DateTime
+  name            String
+  recurringAnnual Boolean  @default(false) // matches month/day across years
+  workingDayOff   Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  calendar HolidayCalendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  @@index([calendarId, date])
+  @@index([orgId, date])
+}
+
+enum FiscalPeriod {
+  MONTHLY
+  QUARTERLY
+  WEEKLY_445
+  WEEKLY_13
+}
+
+model FiscalCalendar {
+  id          String       @id @default(cuid())
+  orgId       String?
+  name        String
+  code        String
+  anchorMonth Int          @default(4) // 1-12 fiscal year start month
+  startDay    Int          @default(1)
+  period      FiscalPeriod @default(MONTHLY)
+  weeksPerQtr Int          @default(13)
+  timezone    String       @default("Asia/Kolkata")
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, code])
+}
+
+enum LibraryTemplateKind {
+  BUSINESS_HOURS
+  TRADING_HOURS
+  OFFICE_HOURS
+  FISCAL_CALENDAR
+  HOLIDAY_CALENDAR
+  MAINTENANCE_WINDOW
+  SHIFT_TEMPLATE
+  INDUSTRY
+  ENTERPRISE
+}
+
+// Temporal Library — reusable, industry & enterprise templates as data.
+model LibraryTemplate {
+  id          String              @id @default(cuid())
+  orgId       String? // null = global library
+  kind        LibraryTemplateKind
+  name        String
+  code        String
+  description String?
+  industry    String? // healthcare|retail|manufacturing|saas|hospitality...
+  // template: the reusable spec. { dsl, recurrence, rules, shifts, windows, holidayRefs }
+  template    Json
+  isGlobal    Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, code])
+  @@index([kind, isGlobal])
+}
+
+// Org-level temporal configuration — the temporal operating envelope.
+model TemporalConfiguration {
+  id                     String   @id @default(cuid())
+  orgId                  String   @unique
+  timezone               String   @default("Asia/Kolkata")
+  timeSystemCode         String   @default("UTC")
+  weekStartsOn           Int      @default(1) // 0=Sun,1=Mon
+  businessRuleId         String? // default business-hours TemporalRule
+  holidayCalendarId      String?
+  fiscalCalendarId       String?
+  workingDays            Int[]    @default([1, 2, 3, 4, 5])
+  defaultCapacity        Int      @default(1)
+  retentionDays          Int      @default(0) // event-store retention; 0=forever
+  materializeHorizonDays Int      @default(90) // occurrence lookahead
+  settings               Json     @default("{}")
+  updatedAt              DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// UTP event-stream transports — the Kafka/Pulsar/Event-Fabric seam, as data.
+// The TemporalEventLog is the source of truth; transports push it to external
+// streaming fabrics (HTTP sink adapters ship working; brokers register here).
+// ---------------------------------------------------------------------------
+
+enum TransportKind {
+  HTTP_SINK // signed push (HMAC-SHA256) to any fabric receiver / webhook bridge
+}
+
+model StreamTransport {
+  id          String        @id @default(cuid())
+  orgId       String?       // null = platform fabric (federates every workspace)
+  name        String
+  kind        TransportKind @default(HTTP_SINK)
+  url         String
+  secretEnc   Json          // HMAC key, AES-256-GCM envelope-encrypted at rest
+  eventMatch  String        @default("*") // "*"/"appointment.*"/"pattern.*"...
+  cursorAt    DateTime      @default(now())
+  cursorId    String        @default("")  // at+id pair = resumable stream cursor
+  active      Boolean       @default(false) // fill-in-the-blank: inactive placeholder until configured
+  failCount   Int           @default(0)
+  lastError   String?
+  lastSentAt  DateTime?
+  sentCount   Int           @default(0)
+  createdById String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, name])
+  @@index([active])
+}
