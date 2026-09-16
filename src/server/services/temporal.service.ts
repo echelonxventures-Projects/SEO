@@ -367,6 +367,7 @@ export async function updatePattern(ctx: Ctx, id: string, input: unknown) {
     });
     await audit(tx, ctx, "pattern.updated", undefined, id, { version: u.version });
     await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "PATTERN", entityId: id, event: "PatternUpdated", snapshot: u, payload: { version: u.version } });
+    await tx.temporalEventLog.create({ data: { orgId: ctx.orgId, aggregateType: "PATTERN", aggregateId: id, seq: (await tx.temporalEventLog.count({ where: { aggregateType: "PATTERN", aggregateId: id } })) + 1, type: "ScheduleVersioned", payload: { version: u.version } as object, actorId: ctx.userId } });
     return u;
   });
   return updated;
@@ -379,7 +380,8 @@ export async function deprecatePattern(ctx: Ctx, id: string) {
     await tx.temporalPattern.update({ where: { id }, data: { status: "DEPRECATED" } });
     await audit(tx, ctx, "pattern.deprecated", undefined, id);
     await emit(tx, { type: "pattern.deprecated", aggregateType: "PATTERN", aggregateId: id, orgId: pat.orgId ?? ctx.orgId });
-    await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "PATTERN", entityId: id, event: "PatternDeprecated" });
+    await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "PATTERN", entityId: id, event: "PatternRetired" });
+    await tx.temporalEventLog.create({ data: { orgId: ctx.orgId, aggregateType: "PATTERN", aggregateId: id, seq: (await tx.temporalEventLog.count({ where: { aggregateType: "PATTERN", aggregateId: id } })) + 1, type: "PatternRetired", payload: {} as object, actorId: ctx.userId } });
   });
   return { status: "DEPRECATED" };
 }

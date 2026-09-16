@@ -67,7 +67,8 @@ async function orgRules(ctx: Ctx, calendarId: string): Promise<RuleLike[]> {
 
 async function bookingConstraintCtx(orgId: string, rules: RuleLike[]) {
   const [holidays, holidaySets] = await Promise.all([resolveHolidaySet(orgId), resolveHolidaySets(orgId, rules)]);
-  return { now: new Date(), holidays, holidaySets };
+  const cfg = await db.temporalConfiguration.findUnique({ where: { orgId }, select: { timezone: true } });
+  return { now: new Date(), holidays, holidaySets, timezone: cfg?.timezone ?? "UTC" };
 }
 
 /** Generate open slots on a calendar (+optional resource) for the horizon. */
@@ -243,7 +244,7 @@ export async function book(ctx: Ctx, input: unknown) {
       });
       await audit(tx, ctx, "appointment.waitlisted", undefined, appt.id, { slotId: slot.id, pos });
       await emit(tx, { type: "appointment.waitlisted", aggregateType: "APPOINTMENT", aggregateId: appt.id, orgId: ctx.orgId, payload: { pos } });
-      await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "APPOINTMENT", entityId: appt.id, event: "AppointmentWaitlisted", snapshot: appt });
+      await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "APPOINTMENT", entityId: appt.id, event: "BookingCreated", snapshot: appt });
       return { appointment: appt, waitlisted: true };
     }
 
@@ -272,7 +273,10 @@ export async function book(ctx: Ctx, input: unknown) {
     }
     await audit(tx, ctx, "appointment.booked", undefined, appt.id, { slotId: slot.id });
     await emit(tx, { type: "appointment.booked", aggregateType: "APPOINTMENT", aggregateId: appt.id, orgId: ctx.orgId, payload: { code: appt.referenceCode } });
-    await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "APPOINTMENT", entityId: appt.id, event: "AppointmentBooked", snapshot: appt });
+    await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "APPOINTMENT", entityId: appt.id, event: "BookingCreated", snapshot: appt });
+    await tx.temporalEventLog.create({ data: { orgId: ctx.orgId, aggregateType: "APPOINTMENT", aggregateId: appt.id, seq: (await tx.temporalEventLog.count({ where: { aggregateType: "APPOINTMENT", aggregateId: appt.id } })) + 1, type: "BookingConfirmed", payload: { referenceCode: appt.referenceCode } as object, actorId: ctx.userId } });
+    const { meter } = await import("./temporal-metering.service");
+    await meter(tx, ctx.orgId, "APPOINTMENT", 1, { type: "APPOINTMENT", id: appt.id }, { source: "workspace" });
     return { appointment: appt, waitlisted: false };
   });
 }
@@ -334,7 +338,9 @@ export async function transitionAppointment(ctx: Ctx, id: string, action: ApptTr
     });
     await audit(tx, ctx, `appointment.${action}`, undefined, id, { status: updated.status });
     await emit(tx, { type: `appointment.${action.toLowerCase()}`, aggregateType: "APPOINTMENT", aggregateId: id, orgId: ctx.orgId });
-    await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "APPOINTMENT", entityId: id, event: `Appointment${action.charAt(0).toUpperCase()}${action.slice(1)}`, snapshot: updated });
+    const EV: Record<string, string> = { confirm: "BookingConfirmed", cancel: "BookingCancelled", checkIn: "BookingCheckedIn", complete: "BookingCompleted", noShow: "BookingNoShow" };
+    await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "APPOINTMENT", entityId: id, event: EV[action] ?? `Appointment${action}`, snapshot: updated });
+    await tx.temporalEventLog.create({ data: { orgId: ctx.orgId, aggregateType: "APPOINTMENT", aggregateId: id, seq: (await tx.temporalEventLog.count({ where: { aggregateType: "APPOINTMENT", aggregateId: id } })) + 1, type: EV[action] ?? "BookingUpdated", payload: { status: updated.status } as object, actorId: ctx.userId } });
 
     // releases free capacity & atomically promote the waitlist
     if (action === "cancel" || action === "noShow") {
@@ -399,7 +405,8 @@ export async function reschedule(ctx: Ctx, id: string, toSlotId: string) {
     }
     await audit(tx, ctx, "appointment.rescheduled", undefined, id, { from: appt.startsAt, to: slot.startsAt });
     await emit(tx, { type: "appointment.rescheduled", aggregateType: "APPOINTMENT", aggregateId: id, orgId: ctx.orgId, payload: { from: appt.startsAt.toISOString(), to: slot.startsAt.toISOString() } });
-    await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "APPOINTMENT", entityId: id, event: "AppointmentRescheduled", snapshot: updated });
+    await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "APPOINTMENT", entityId: id, event: "BookingRescheduled", snapshot: updated });
+    await tx.temporalEventLog.create({ data: { orgId: ctx.orgId, aggregateType: "APPOINTMENT", aggregateId: id, seq: (await tx.temporalEventLog.count({ where: { aggregateType: "APPOINTMENT", aggregateId: id } })) + 1, type: "BookingRescheduled", payload: { to: slot.startsAt } as object, actorId: ctx.userId } });
     return updated;
   });
 }

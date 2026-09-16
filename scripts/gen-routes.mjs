@@ -901,6 +901,9 @@ R("/api/v1/temporal/triggers/[id]/toggle", {
 R("/api/v1/temporal/triggers/[id]/arm-on-event", {
   POST: { perm: "temporal.write", svc: ["temporal-triggers.service", "armEventTrigger"], body: `const body = await readJson(req) as { eventId: string }; const data = await armEventTrigger(ctxOf(viewer!, ip), id, body.eventId);` },
 });
+R("/api/v1/temporal/triggers/[id]", {
+  DELETE: { perm: "temporal.write", svc: ["temporal-triggers.service", "deleteTrigger"], body: `const data = await deleteTrigger(ctxOf(viewer!, ip), id);` },
+});
 R("/api/v1/temporal/triggers/[id]/fires", {
   GET: { perm: "temporal.read", svc: ["temporal-triggers.service", "listTriggerFires"], body: `const data = await listTriggerFires(ctxOf(viewer!, ip), id);` },
 });
@@ -1015,6 +1018,98 @@ R("/api/v1/cron/reports", {
     auth: "public", rate: "auth",
     svc: ["analytics.service", "runDueReports"],
     body: `const { getEnv } = await import("@/server/env"); const { AppError, ErrorCodes } = await import("@/server/errors"); const provided = (req.headers.get("authorization") ?? "").split(" ")[1] ?? ""; if (!getEnv().CRON_SECRET || provided !== getEnv().CRON_SECRET) throw new AppError(ErrorCodes.UNAUTHENTICATED, "Invalid cron secret"); const data = await runDueReports();`,
+  },
+});
+// ---- TPaaS: metering, connectors, widgets, marketplace, branding, i18n, SDK ----
+R("/api/v1/temporal/metering/summary", {
+  GET: { perm: "subscription.read", svc: ["temporal-metering.service", "usageSummary"], body: `const data = await usageSummary(ctxOf(viewer!, ip), req.nextUrl.searchParams);` },
+});
+R("/api/v1/temporal/metering/events", {
+  GET: { perm: "subscription.read", svc: ["temporal-metering.service", "listUsageEvents"], body: `const data = await listUsageEvents(ctxOf(viewer!, ip), req.nextUrl.searchParams);` },
+});
+R("/api/v1/temporal/metering/prices", {
+  GET: { perm: "settings.read", svc: ["temporal-metering.service", "listMeteredPrices"], body: `const data = await listMeteredPrices(ctxOf(viewer!, ip));` },
+  POST: { perm: "settings.manage", svc: ["temporal-metering.service", "upsertMeteredPrice"], body: `const data = await upsertMeteredPrice(ctxOf(viewer!, ip), await readJson(req));` },
+});
+R("/api/v1/temporal/connectors/templates", {
+  GET: { perm: "temporal.read", svc: ["temporal-connectors.service", "listConnectorTemplates"], body: `const data = await listConnectorTemplates(ctxOf(viewer!, ip));` },
+  POST: { perm: "temporal.manage", svc: ["temporal-connectors.service", "upsertConnectorTemplate"], body: `const data = await upsertConnectorTemplate(ctxOf(viewer!, ip), await readJson(req));` },
+});
+R("/api/v1/temporal/connectors", {
+  GET: { perm: "temporal.read", svc: ["temporal-connectors.service", "listConnections"], body: `const data = await listConnections(ctxOf(viewer!, ip), req.nextUrl.searchParams.get("calendarId") ?? undefined);` },
+  POST: { perm: "temporal.write", svc: ["temporal-connectors.service", "connectCalendar"], body: `const data = await connectCalendar(ctxOf(viewer!, ip), await readJson(req));` },
+});
+R("/api/v1/temporal/connectors/[id]/sync", {
+  POST: { perm: "temporal.write", svc: ["temporal-connectors.service", "syncConnection"], body: `const data = await syncConnection(ctxOf(viewer!, ip), id);` },
+});
+R("/api/v1/temporal/connectors/[id]", {
+  DELETE: { perm: "temporal.write", svc: ["temporal-connectors.service", "disconnectCalendar"], body: `const data = await disconnectCalendar(ctxOf(viewer!, ip), id);` },
+});
+R("/api/v1/temporal/widgets", {
+  GET: { perm: "temporal.read", svc: ["temporal-widgets.service", "listWidgets"], body: `const data = await listWidgets(ctxOf(viewer!, ip), req.nextUrl.searchParams.get("calendarId") ?? undefined);` },
+  POST: { perm: "temporal.write", svc: ["temporal-widgets.service", "createWidget"], body: `const data = await createWidget(ctxOf(viewer!, ip), await readJson(req));` },
+});
+R("/api/v1/temporal/widgets/[id]", {
+  PATCH: { perm: "temporal.write", svc: ["temporal-widgets.service", "updateWidget"], body: `const data = await updateWidget(ctxOf(viewer!, ip), id, await readJson(req));` },
+  DELETE: { perm: "temporal.write", svc: ["temporal-widgets.service", "deleteWidget"], body: `const data = await deleteWidget(ctxOf(viewer!, ip), id);` },
+});
+R("/api/v1/temporal/widgets/[id]/toggle", {
+  POST: { perm: "temporal.write", svc: ["temporal-widgets.service", "toggleWidget"], extra: [["activeSchema", "@/server/schemas"]], body: `const { active } = activeSchema.parse(await readJson(req)); const data = await toggleWidget(ctxOf(viewer!, ip), id, active);` },
+});
+R("/api/v1/temporal/widgets/[id]/rotate", {
+  POST: { perm: "temporal.write", svc: ["temporal-widgets.service", "rotateWidgetToken"], body: `const data = await rotateWidgetToken(ctxOf(viewer!, ip), id);` },
+});
+R("/api/v1/public/widget/[token]", {
+  GET: { auth: "public", rate: "api", svc: ["temporal-widgets.service", "publicWidget"], body: `const data = await publicWidget(params.token, req.headers.get("origin"));` },
+  POST: { auth: "public", rate: "api", svc: ["temporal-widgets.service", "publicWidgetBook"], body: `const data = await publicWidgetBook(params.token, await readJson(req), ip);` },
+});
+R("/api/v1/temporal/marketplace", {
+  GET: { perm: "temporal.read", svc: ["temporal-marketplace.service", "listListings"], body: `const data = await listListings(ctxOf(viewer!, ip), req.nextUrl.searchParams);` },
+  POST: { perm: "temporal.write", svc: ["temporal-marketplace.service", "createListing"], body: `const data = await createListing(ctxOf(viewer!, ip), await readJson(req));` },
+});
+R("/api/v1/temporal/marketplace/[id]/publish", {
+  POST: { perm: "temporal.write", svc: ["temporal-marketplace.service", "publishListing"], body: `const data = await publishListing(ctxOf(viewer!, ip), id);` },
+});
+R("/api/v1/temporal/marketplace/[id]/retire", {
+  POST: { perm: "temporal.write", svc: ["temporal-marketplace.service", "retireListing"], body: `const data = await retireListing(ctxOf(viewer!, ip), id);` },
+});
+R("/api/v1/temporal/marketplace/[id]/certify", {
+  POST: { perm: "temporal.manage", svc: ["temporal-marketplace.service", "certifyListing"], body: `const data = await certifyListing(ctxOf(viewer!, ip), id, await readJson(req));` },
+});
+R("/api/v1/temporal/marketplace/[id]/install", {
+  POST: { perm: "temporal.write", svc: ["temporal-marketplace.service", "installListing"], body: `const data = await installListing(ctxOf(viewer!, ip), id);` },
+});
+R("/api/v1/temporal/marketplace/installs", {
+  GET: { perm: "temporal.read", svc: ["temporal-marketplace.service", "listInstalls"], body: `const data = await listInstalls(ctxOf(viewer!, ip), req.nextUrl.searchParams);` },
+});
+R("/api/v1/temporal/branding", {
+  GET: { perm: "settings.read", svc: ["temporal-branding.service", "getBranding"], body: `const data = await getBranding(ctxOf(viewer!, ip));` },
+  POST: { perm: "settings.manage", svc: ["temporal-branding.service", "upsertBranding"], body: `const data = await upsertBranding(ctxOf(viewer!, ip), await readJson(req));` },
+});
+R("/api/v1/public/branding", {
+  GET: { auth: "public", rate: "api", svc: ["temporal-branding.service", "publicBranding"], body: `const data = await publicBranding(req.nextUrl.searchParams.get("domain") ?? new URL(req.url).hostname);` },
+});
+R("/api/v1/temporal/locales", {
+  GET: { perm: "settings.read", svc: ["temporal-branding.service", "listLocales"], body: `const data = await listLocales(ctxOf(viewer!, ip));` },
+  POST: { perm: "settings.manage", svc: ["temporal-branding.service", "upsertLocale"], body: `const data = await upsertLocale(ctxOf(viewer!, ip), await readJson(req));` },
+});
+R("/api/v1/temporal/locales/strings", {
+  GET: { perm: "org.read", svc: ["temporal-branding.service", "resolveStrings"], body: `const data = await resolveStrings(ctxOf(viewer!, ip), req.nextUrl.searchParams.get("code") ?? undefined);` },
+});
+R("/api/v1/temporal/graphql/schema", {
+  GET: { perm: "temporal.read", svc: ["temporal-sdk.service", "graphqlSchemaDoc"], body: `const data = await graphqlSchemaDoc();` },
+});
+R("/api/v1/temporal/sdk", {
+  GET: { perm: "temporal.read", svc: ["temporal-sdk.service", "generateSdk"], body: `const data = await generateSdk(req.nextUrl.searchParams.get("language") ?? "typescript");` },
+});
+R("/api/v1/temporal/sdk/targets", {
+  GET: { perm: "temporal.read", svc: ["temporal-sdk.service", "listSdkTargets"], body: `const data = await listSdkTargets();` },
+});
+R("/api/v1/cron/calendar-sync", {
+  POST: {
+    auth: "public", rate: "auth",
+    svc: ["temporal-connectors.service", "syncDueConnections"],
+    body: `const { getEnv } = await import("@/server/env"); const { AppError, ErrorCodes } = await import("@/server/errors"); const provided = (req.headers.get("authorization") ?? "").split(" ")[1] ?? ""; if (!getEnv().CRON_SECRET || provided !== getEnv().CRON_SECRET) throw new AppError(ErrorCodes.UNAUTHENTICATED, "Invalid cron secret"); const data = await syncDueConnections();`,
   },
 });
 R("/api/v1/cron/temporal-stream", {

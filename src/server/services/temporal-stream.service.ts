@@ -1,11 +1,20 @@
 /**
  * UTP Event-Stream Transports — the "Kafka / Pulsar / Event Fabric" layer,
- * implemented as data + a working signed HTTP-push adapter.
+ * implemented as data + working signed push adapters.
  *
  * The TemporalEventLog is the immutable source of truth; each transport owns
- * a resumable (at,id) cursor and at-least-once delivery with HMAC-SHA256
- * signatures, bounded retries, failure counters and auto-pause. Brokers are
- * additional adapters on TransportKind — the app contract never changes.
+ * a resumable (at,id) cursor and at-least-once delivery with bounded retries,
+ * failure counters and auto-pause.
+ *
+ * Adapters by TransportKind:
+ *   HTTP_SINK   — signed POST (HMAC-SHA256) to any webhook bridge / receiver
+ *   KAFKA       — Confluent REST Proxy `POST /topics/{topic}` (url = proxy base, topic in eventMatch? no — see config)
+ *   PULSAR      — Pulsar HTTP producer `POST /admin/v2/...` / websocket proxy
+ *   EVENT_MESH  — generic mesh ingest endpoint (same contract as HTTP_SINK)
+ *
+ * Broker credentials live in `secretEnc`; the topic/target is carried in the
+ * transport's `url` (broker base) plus the `topic` field embedded in the URL
+ * query (`?topic=...`) so no schema change is needed per broker.
  */
 
 import crypto from "node:crypto";
@@ -17,6 +26,7 @@ import { nameish } from "../schemas";
 import { audit } from "./common";
 import { emit } from "../events";
 import type { Ctx } from "./common";
+import { meter } from "./temporal-metering.service";
 
 const MATCH_RE = /^[A-Za-z][A-Za-z0-9._-]{0,78}\*?$/;
 const MAX_BATCH = 40;
@@ -37,28 +47,35 @@ function matches(pattern: string, type: string): boolean {
 export const transportSchema = z.object({
   name: nameish,
   url: z.string().trim().url().max(500),
+  kind: z.enum(["HTTP_SINK", "KAFKA", "PULSAR", "EVENT_MESH"]).default("HTTP_SINK"),
   eventMatch: z.string().trim().max(80).default("*"),
-  platformScope: z.boolean().default(false), // org users may create workspace-scoped only
+  topic: z.string().trim().max(200).nullable().optional(),
+  platformScope: z.boolean().default(false),
 });
 
 export async function createTransport(ctx: Ctx, input: unknown) {
   const data = transportSchema.parse(input);
   if (data.platformScope && !ctx.viewer.isPlatformAdmin) throw new AppError(ErrorCodes.FORBIDDEN, "Platform fabric needs platform access");
-  if (data.eventMatch !== "*" && !MATCH_RE.test(data.eventMatch)) throw new AppError(ErrorCodes.VALIDATION, 'eventMatch must be "*", an exact type ("AppointmentBooked") or a prefix ("Appointment*")');
-  if (!/^https:\/\//.test(data.url) && !/^http:\/\/(localhost|127\.0\.0\.1|host\.docker\.internal)(:\d+)?\//.test(data.url)) {
+  if (data.eventMatch !== "*" && !MATCH_RE.test(data.eventMatch)) throw new AppError(ErrorCodes.VALIDATION, 'eventMatch must be "*", an exact type ("BookingCreated") or a prefix ("Appointment*")');
+  const local = /^http:\/\/(localhost|127\.0\.0\.1|host\.docker\.internal)(:\d+)?\//.test(data.url);
+  if (!/^https:\/\//.test(data.url) && !local) {
     throw new AppError(ErrorCodes.VALIDATION, "Sink URL must be https (http allowed for localhost testing only)");
+  }
+  if ((data.kind === "KAFKA" || data.kind === "PULSAR") && !data.topic) {
+    throw new AppError(ErrorCodes.VALIDATION, `${data.kind} transports need a topic`);
   }
   const orgId = data.platformScope ? null : ctx.orgId;
   const dup = await db.streamTransport.findFirst({ where: { orgId, name: data.name } });
   if (dup) throw new AppError(ErrorCodes.CONFLICT, "Transport name exists");
   const secret = `tsec_${crypto.randomBytes(24).toString("base64url")}`;
+  const url = data.topic ? `${data.url}${data.url.includes("?") ? "&" : "?"}topic=${encodeURIComponent(data.topic)}` : data.url;
   const created = await db.streamTransport.create({
-    data: { orgId, name: data.name, url: data.url, eventMatch: data.eventMatch, secretEnc: encryptSecret(secret, "stream:pending"), createdById: ctx.userId, active: false },
+    data: { orgId, name: data.name, kind: data.kind as never, url, eventMatch: data.eventMatch, secretEnc: encryptSecret(secret, "stream:pending"), createdById: ctx.userId, active: false },
   });
   await db.streamTransport.update({ where: { id: created.id }, data: { secretEnc: encryptSecret(secret, streamAad(created.id)) } });
-  await audit(db, ctx, "transport.created", undefined, created.id, { url: data.url, scope: orgId ? "workspace" : "platform" });
-  await emit(db, { type: "transport.created", aggregateType: "STREAM_TRANSPORT", aggregateId: created.id, orgId, payload: { name: data.name } });
-  return { transport: { id: created.id, name: created.name, url: created.url, eventMatch: created.eventMatch, active: created.active, scope: orgId ? "workspace" : "platform" }, secret };
+  await audit(db, ctx, "transport.created", undefined, created.id, { url, scope: orgId ? "workspace" : "platform", kind: data.kind });
+  await emit(db, { type: "transport.created", aggregateType: "STREAM_TRANSPORT", aggregateId: created.id, orgId, payload: { name: data.name, kind: data.kind } });
+  return { transport: { id: created.id, name: created.name, kind: created.kind, url: created.url, eventMatch: created.eventMatch, active: created.active, scope: orgId ? "workspace" : "platform" }, secret };
 }
 
 export async function listTransports(ctx: Ctx) {
@@ -94,7 +111,7 @@ export async function deleteTransport(ctx: Ctx, id: string) {
   await audit(db, ctx, "transport.deleted", undefined, id);
 }
 
-/** One streaming pass: advance every active transport's cursor with signed pushes. */
+/** One streaming pass: advance every active transport's cursor with its adapter. */
 export async function streamTemporalEvents(now = new Date()): Promise<{ delivered: number; failed: number; transports: number; paused: number }> {
   const transports = await db.streamTransport.findMany({ where: { active: true }, take: 50 });
   let delivered = 0;
@@ -109,7 +126,6 @@ export async function streamTemporalEvents(now = new Date()): Promise<{ delivere
       paused++;
       continue;
     }
-    // at-least-once batch from the immutable log (org-scoped or federated)
     const events = await db.temporalEventLog.findMany({
       where: {
         ...(t.orgId ? { orgId: t.orgId } : {}),
@@ -119,44 +135,22 @@ export async function streamTemporalEvents(now = new Date()): Promise<{ delivere
       take: MAX_BATCH,
     });
     if (!events.length) continue;
-    let sent = 0;
-    let broke = false;
     for (const ev of events) {
       if (!matches(t.eventMatch, ev.type)) {
-        // non-matching events still advance the cursor (order matters)
         await db.streamTransport.update({ where: { id: t.id }, data: { cursorAt: ev.at, cursorId: ev.id } });
         continue;
       }
       const body = JSON.stringify({
-        id: ev.id,
-        type: ev.type,
-        aggregateType: ev.aggregateType,
-        aggregateId: ev.aggregateId,
-        orgId: ev.orgId,
-        seq: ev.seq,
-        payload: ev.payload,
-        at: ev.at.toISOString(),
+        id: ev.id, type: ev.type, aggregateType: ev.aggregateType, aggregateId: ev.aggregateId,
+        orgId: ev.orgId, seq: ev.seq, payload: ev.payload, at: ev.at.toISOString(),
       });
       const ts = Math.floor(Date.now() / 1000);
       const sig = crypto.createHmac("sha256", secret).update(`${ts}.${body}`, "utf8").digest("hex");
       try {
-        const res = await fetch(t.url, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-omni-event": ev.type,
-            "x-omni-timestamp": String(ts),
-            "x-omni-signature": `sha256=${sig}`,
-            "x-omni-transport": t.id,
-          },
-          body,
-          cache: "no-store",
-          signal: AbortSignal.timeout(10_000),
-        });
+        const res = await pushToTransport(t.kind, t.url, body, secret, sig, ts, ev.type, t.id);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         await db.streamTransport.update({ where: { id: t.id }, data: { cursorAt: ev.at, cursorId: ev.id, sentCount: { increment: 1 }, lastSentAt: new Date(), failCount: 0, lastError: null } });
         delivered++;
-        sent++;
       } catch (e) {
         const msg = (e instanceof Error ? e.message : "push failed").slice(0, 300);
         const nextFails = t.failCount + 1;
@@ -164,17 +158,60 @@ export async function streamTemporalEvents(now = new Date()): Promise<{ delivere
         await db.streamTransport.update({ where: { id: t.id }, data: { failCount: nextFails, lastError: msg, active: !stop } });
         failed++;
         if (stop) paused++;
-        broke = true;
-        break; // cursor holds — retry next pass (at-least-once, no gaps)
+        break;
       }
     }
-    void sent;
-    void broke;
   }
   await db.systemSetting.upsert({
     where: { key: "cron:temporal-stream" },
     create: { key: "cron:temporal-stream", value: { at: now.toISOString(), delivered } },
     update: { value: { at: now.toISOString(), delivered } },
   });
+  if (transports.length && delivered > 0) {
+    const orgIds = [...new Set(transports.map((t) => t.orgId).filter((x): x is string => !!x))];
+    for (const orgId of orgIds) {
+      await meter(db, orgId, "API_CALL", delivered, { type: "STREAM_TRANSPORT", id: "cron" }).catch(() => undefined);
+    }
+  }
   return { delivered, failed, transports: transports.length, paused };
+}
+
+/** Adapter dispatch — every kind performs a real HTTP call to the configured target. */
+async function pushToTransport(kind: string, url: string, body: string, secret: string, sig: string, ts: number, eventType: string, transportId: string): Promise<Response> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "x-omni-event": eventType,
+    "x-omni-timestamp": String(ts),
+    "x-omni-signature": `sha256=${sig}`,
+    "x-omni-transport": transportId,
+  };
+  const base = url.split("?")[0];
+  const topic = new URL(url).searchParams.get("topic") ?? "temporal-events";
+  switch (kind) {
+    case "KAFKA": {
+      // Confluent REST Proxy produce API
+      return fetch(`${base}/topics/${encodeURIComponent(topic)}`, {
+        method: "POST",
+        headers: { ...headers, "x-omni-secret": secret },
+        body: JSON.stringify({ records: [{ value: JSON.parse(body) }] }),
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      });
+    }
+    case "PULSAR": {
+      // Pulsar HTTP producer (pulsar-http / websocket proxy)
+      return fetch(`${base}/topics/${encodeURIComponent(topic)}`, {
+        method: "POST",
+        headers: { ...headers, "x-omni-secret": secret },
+        body,
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      });
+    }
+    case "EVENT_MESH":
+    case "HTTP_SINK":
+    default: {
+      return fetch(url, { method: "POST", headers, body, cache: "no-store", signal: AbortSignal.timeout(10_000) });
+    }
+  }
 }

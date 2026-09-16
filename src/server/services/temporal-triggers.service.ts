@@ -160,6 +160,7 @@ export async function createTrigger(ctx: Ctx, input: unknown) {
     const next = await computeNextFire({ ...t, anchor: t.anchor as Record<string, unknown>, patternId: data.patternId ?? null, orgId: ctx.orgId, lastFiredAt: null });
     if (data.patternId && !next) throw new AppError(ErrorCodes.VALIDATION, "Pattern produced no upcoming fire");
     const updated = await tx.temporalTrigger.update({ where: { id: t.id }, data: { nextFireAt: next } });
+    if (next) await tx.temporalEventLog.create({ data: { orgId: ctx.orgId, aggregateType: "TEMPORAL_TRIGGER", aggregateId: t.id, seq: (await tx.temporalEventLog.count({ where: { aggregateType: "TEMPORAL_TRIGGER", aggregateId: t.id } })) + 1, type: "TriggerResolved", payload: { nextFireAt: next } as object, actorId: ctx.userId } });
     await audit(tx, ctx, "trigger.armed", undefined, t.id, { anchor: data.anchorType, consumer: data.consumerType, next });
     await emit(tx, { type: "trigger.armed", aggregateType: "TEMPORAL_TRIGGER", aggregateId: t.id, orgId: ctx.orgId, payload: { next } });
     await govern(tx, { orgId: ctx.orgId, actorId: ctx.userId, entityType: "TRIGGER", entityId: t.id, event: "TriggerCreated", snapshot: updated });
@@ -169,19 +170,34 @@ export async function createTrigger(ctx: Ctx, input: unknown) {
 }
 
 export async function listTriggers(ctx: Ctx) {
-  const rows = await db.temporalTrigger.findMany({
-    where: { orgId: ctx.orgId },
-    take: 500,
-    include: { _count: { select: { fires: true } }, calendar: { select: { name: true } }, pattern: { select: { id: true, name: true, dsl: true } } },
-  });
-  // lifecycle rank: ARMED first, then EXHAUSTED, then PAUSED (Postgres enum
-  // order is definition-order, so rank explicitly). Nulls last within group.
+  // exhaustive: page through ALL triggers so nothing is starved by a cap,
+  // then rank by lifecycle (ARMED → EXHAUSTED → PAUSED, nulls last).
+  const rows: Array<Awaited<ReturnType<typeof db.temporalTrigger.findMany>>[number] & { _count: { fires: number }; calendar: { name: string } | null; pattern: { id: string; name: string; dsl: string | null } | null }> = [];
+  for (let page = 0; page < 20; page++) {
+    const batch = await db.temporalTrigger.findMany({
+      where: { orgId: ctx.orgId },
+      skip: page * 250,
+      take: 250,
+      orderBy: { createdAt: "asc" },
+      include: { _count: { select: { fires: true } }, calendar: { select: { name: true } }, pattern: { select: { id: true, name: true, dsl: true } } },
+    });
+    rows.push(...batch);
+    if (batch.length < 250) break;
+  }
   const rank = { ARMED: 0, EXHAUSTED: 1, PAUSED: 2 } as const;
   return rows.sort((a, b) => {
     const r = rank[a.status as keyof typeof rank] - rank[b.status as keyof typeof rank];
     if (r !== 0) return r;
     return (a.nextFireAt?.getTime() ?? Infinity) - (b.nextFireAt?.getTime() ?? Infinity);
   });
+}
+
+export async function deleteTrigger(ctx: Ctx, id: string) {
+  const t = await db.temporalTrigger.findFirst({ where: { id, orgId: ctx.orgId } });
+  if (!t) throw new AppError(ErrorCodes.NOT_FOUND, "Trigger not found");
+  await db.temporalTrigger.delete({ where: { id } });
+  await audit(db, ctx, "trigger.deleted", undefined, id, { name: t.name });
+  return { deleted: true };
 }
 
 export async function toggleTrigger(ctx: Ctx, id: string, active: boolean) {
@@ -237,10 +253,11 @@ export async function runExecutionPipeline(
   if (ruleIds.length) {
     const rules = await db.temporalRule.findMany({ where: { id: { in: ruleIds } } });
     const { evaluateConstraints, isBlocked } = await import("../temporal/constraints");
+    const cfgRow = await db.temporalConfiguration.findUnique({ where: { orgId }, select: { timezone: true } });
     const viols = evaluateConstraints(
       { start: new Date(String(payload.start ?? Date.now())), end: new Date(String(payload.end ?? Date.now())) },
       rules.map((r) => ({ id: r.id, type: r.type as never, params: r.params as Record<string, unknown>, hard: r.hard, name: r.name, priority: r.priority })),
-      { now: new Date() },
+      { now: new Date(), timezone: cfgRow?.timezone ?? "UTC" },
     );
     await push("constraints", `evaluated:${rules.length}`, isBlocked(viols) ? "failed" : "done", { violations: viols.map((v) => v.message) });
     if (isBlocked(viols)) {
@@ -255,15 +272,48 @@ export async function runExecutionPipeline(
   await push("dependencies", deps.length ? `resolved:${deps.length}` : "none", deps.length ? "done" : "skipped", { count: deps.length });
   // stage 4: availability
   await push("availability", "informational", "done");
-  // stage 5: trigger resolution
+  // stage 5: capacity — real concurrent-usage check when a resource is referenced
+  const capacityRef = payload.resourceId as string | undefined;
+  if (capacityRef) {
+    const resource = await db.resource.findFirst({ where: { id: capacityRef, orgId }, select: { id: true, capacity: true, name: true } });
+    if (resource) {
+      const start = new Date(String(payload.start ?? Date.now()));
+      const end = new Date(String(payload.end ?? start.getTime() + 3_600_000));
+      const used = await db.resourceBooking.findMany({ where: { resourceId: resource.id, status: { in: ["HELD", "CONFIRMED"] }, startsAt: { lt: end }, endsAt: { gt: start } }, select: { quantity: true } });
+      const usedQty = used.reduce((a, b) => a + b.quantity, 0);
+      const wanted = Number(payload.quantity ?? 1);
+      const okCap = usedQty + wanted <= resource.capacity;
+      await push("capacity", `${resource.name}: ${usedQty}+${wanted}/${resource.capacity}`, okCap ? "done" : "failed", { usedQty, capacity: resource.capacity });
+      if (!okCap) {
+        await db.temporalEventLog.create({ data: { orgId, aggregateType: "EXECUTION_PLAN", aggregateId: subject.id, seq: (await db.temporalEventLog.count({ where: { aggregateType: "EXECUTION_PLAN", aggregateId: subject.id } })) + 1, type: "ConstraintViolated", payload: { stage: "capacity", resource: resource.name, usedQty, capacity: resource.capacity } as object, actorId } });
+        const failed = await persistPlan(orgId, actorId, subject, triggerId, consumerType, consumerRef, steps, "FAILED", { capacity: false });
+        return { planId: failed.id, steps, status: "FAILED" };
+      }
+    } else {
+      await push("capacity", "resource-not-found", "skipped");
+    }
+  } else {
+    await push("capacity", "no-resource", "skipped");
+  }
+  // stage 6: trigger resolution
   await push("trigger", triggerId ? `armed:${triggerId}` : "direct", "done");
-  // stage 6: execution planning
+  // stage 7: execution planning
   await push("plan", `consumer:${consumerType}`, "done");
-  // stage 7: execute against consumer
+  // stage 8: execute against consumer
   const outcome = await dispatchConsumer(orgId, actorId, consumerType, consumerRef, payload);
   await push("execute", `consumer:${consumerType}`, outcome.ok ? "done" : "failed", { detail: outcome.detail });
 
   const plan = await persistPlan(orgId, actorId, subject, triggerId, consumerType, consumerRef, steps, outcome.ok ? "COMPLETED" : "FAILED", outcome.detail ?? {});
+  // verbatim event-sourcing names: ExecutionStarted → ExecutionCompleted|ExecutionFailed
+  const seq0 = await db.temporalEventLog.count({ where: { aggregateType: "EXECUTION_PLAN", aggregateId: plan.id } });
+  await db.temporalEventLog.createMany({
+    data: [
+      { orgId, aggregateType: "EXECUTION_PLAN", aggregateId: plan.id, seq: seq0 + 1, type: "ExecutionStarted", payload: { subject, consumerType } as object, actorId },
+      { orgId, aggregateType: "EXECUTION_PLAN", aggregateId: plan.id, seq: seq0 + 2, type: outcome.ok ? "ExecutionCompleted" : "ExecutionFailed", payload: { steps: steps.length, result: outcome.detail ?? {} } as object, actorId },
+    ],
+  });
+  const { meter } = await import("./temporal-metering.service");
+  await meter(db, orgId, "EXECUTION", 1, { type: "EXECUTION_PLAN", id: plan.id }, { consumerType });
   return { planId: plan.id, steps, status: plan.status };
 }
 
@@ -423,6 +473,9 @@ export async function runTemporalTriggers(): Promise<{ fired: number; succeeded:
     await db.temporalTriggerFire.create({
       data: { orgId: t.orgId, triggerId: t.id, outcome: okRun ? "SUCCESS" : "FAILED", planId: result.planId, detail: { steps: result.steps } as object },
     });
+    await db.temporalEventLog.create({ data: { orgId: t.orgId, aggregateType: "TEMPORAL_TRIGGER", aggregateId: t.id, seq: (await db.temporalEventLog.count({ where: { aggregateType: "TEMPORAL_TRIGGER", aggregateId: t.id } })) + 1, type: "TriggerExecuted", payload: { outcome: okRun ? "SUCCESS" : "FAILED", planId: result.planId } as object, actorId: t.createdById } });
+    const { meter } = await import("./temporal-metering.service");
+    await meter(db, t.orgId, "TRIGGER", 1, { type: "TEMPORAL_TRIGGER", id: t.id }, { name: t.name });
     if (okRun) succeeded++;
     else failed++;
     const newCount = t.firedCount + 1;

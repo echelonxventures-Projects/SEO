@@ -97,10 +97,10 @@ async function main() {
     for (const a of oldAsg) await call("DELETE", `/api/v1/temporal/workforce/assignments/${a.id}`);
   }
 
-  // pause stale smoke triggers from previous runs (keep cron batches deterministic)
+  // delete stale smoke triggers from previous runs (cron batches + listing stay deterministic)
   {
-    const oldTrigs = (await call("GET", "/api/v1/temporal/triggers")).json.data as Array<{ id: string; name: string; status: string }>;
-    for (const t of oldTrigs) if (t.name.startsWith("Smoke ") && t.status !== "EXHAUSTED") await call("POST", `/api/v1/temporal/triggers/${t.id}/toggle`, { active: false });
+    const oldTrigs = (await call("GET", "/api/v1/temporal/triggers")).json.data as Array<{ id: string; name: string }>;
+    for (const t of oldTrigs) if (t.name.startsWith("Smoke ")) await call("DELETE", `/api/v1/temporal/triggers/${t.id}`);
   }
 
   // purge leaked smoke clients from previous runs (client seats count non-archived)
@@ -1150,6 +1150,19 @@ async function main() {
     const patTrig = (await call("GET", "/api/v1/temporal/triggers")).json.data.find((t: { id: string }) => t.id === r.json.data.id);
     assert(patTrig?.pattern?.dsl?.includes("WEEKDAY"), "trigger listing shows the consumed temporal asset");
 
+    // white-label branding + i18n actually render in the shell
+    const brandWrite = await call("POST", "/api/v1/temporal/branding", { productName: `Temporal Co ${S}`, primaryColor: "#ff5500" });
+    assert(brandWrite.status === 200, `branding saved (${brandWrite.status})`);
+    const shell = await fetch(`${BASE}/dashboard`, { headers: { cookie: cookieHeader() } });
+    const shellHtml = await shell.text();
+    assert(shell.status === 200 && shellHtml.includes(`Temporal Co ${S}`), `white-label product name rendered in the app shell (${shell.status})`);
+    const gate = await call("POST", "/api/v1/temporal/branding", { productName: `Temporal Co ${S}`, hidePoweredBy: true });
+    assert(gate.status === 200 || gate.status === 402, `OEM flag respects the WHITE_LABEL plan gate (${gate.status})`);
+    const pubBrand = await call("GET", "/api/v1/public/branding?domain=lumen.example");
+    assert(pubBrand.status === 200 && pubBrand.json.data.productName === "OmniMark" && pubBrand.json.data.custom === false, "public branding resolves for unknown domain (default)");
+    const i18nRes = await call("GET", "/api/v1/temporal/locales/strings?code=hi");
+    assert(i18nRes.status === 200 && i18nRes.json.data.direction === "ltr", "locale resolution returns direction + strings");
+
     // ——— zero-gap battery: planetary scheduling, geoRef, condition triggers, one-shot, config holidays ———
     // (1) pattern bound to Mars Sol Coordinated — recurrence fires on the SOL clock
     const marsPat = await call("POST", "/api/v1/temporal/patterns", { name: `Smoke sol sync ${S}`, dsl: "EVERY DAY 09:00", type: "WINDOW", timeSystemCode: "MARS_SOL" });
@@ -1233,7 +1246,11 @@ async function main() {
 
     // library: templates, instantiate, holidays, fiscal, time systems, planetary
     const lib = await call("GET", "/api/v1/temporal/library");
-    assert(lib.status === 200 && lib.json.data.length >= 10, `temporal library seeded (${lib.json.data?.length ?? 0} templates)`);
+    assert(lib.status === 200 && lib.json.data.length >= 24, `temporal library seeded (${lib.json.data?.length ?? 0} templates)`);
+    const libKinds = new Set((lib.json.data as Array<{ kind: string }>).map((t) => t.kind));
+    const requiredKinds = ["BUSINESS_HOURS", "TRADING_HOURS", "OFFICE_HOURS", "FISCAL_CALENDAR", "HOLIDAY_CALENDAR", "MAINTENANCE_WINDOW", "SHIFT_TEMPLATE", "INDUSTRY", "ENTERPRISE", "BOOKING", "WORKFLOW", "AUTOMATION", "COMPLIANCE", "LAUNCH", "SUPPORT_WINDOW", "PEAK_WINDOW", "CAPACITY_MODEL", "AVAILABILITY_MODEL", "AI_TEMPLATE", "DEPARTMENT", "RESOURCE_TEMPLATE"];
+    const missingKinds = requiredKinds.filter((k) => !libKinds.has(k));
+    assert(missingKinds.length === 0, `all ${requiredKinds.length} library kinds present (${libKinds.size} kinds, missing: ${missingKinds.join(", ") || "none"})`);
     const clinicTpl = lib.json.data.find((t: { code: string }) => t.code === "industry-dev-agency");
     r = await call("POST", `/api/v1/temporal/library/${clinicTpl.id}/instantiate`, {});
     assert(r.status === 200 && r.json.data.created.patterns.length === 3, "industry pack instantiated → 3 patterns");
@@ -1351,6 +1368,98 @@ async function main() {
     assert(!!wrPat, "weekly report now backed by a named UTP temporal asset");
     const repCron = await call("POST", "/api/v1/cron/reports", undefined, { authorization: `Bearer ${process.env.CRON_SECRET ?? ""}` });
     assert(repCron.status === 200, `central report scheduler cron ran (${JSON.stringify(repCron.json?.data ?? {})})`);
+
+    // ——— TPaaS consumption layer: widgets, connectors, marketplace, metering, branding, SDK ———
+    // embeddable widget: create → public board → public book → rotate token
+    r = await call("POST", "/api/v1/temporal/widgets", { calendarId: smokeCal.id, name: `Smoke widget ${S}`, kind: "BOOKING", appearance: { primaryColor: "#0ea5e9", title: "Book with us" }, behavior: {} });
+    assert(r.status === 200 && r.json.data.token.startsWith("wgt_") && r.json.data.scriptSnippet.includes("widget.js"), "widget created with embed snippet");
+    const widgetToken = r.json.data.token;
+    const wBoard = await call("GET", `/api/v1/public/widget/${encodeURIComponent(widgetToken)}`);
+    assert(wBoard.status === 200 && wBoard.json.data.calendar && Array.isArray(wBoard.json.data.slots), `public widget board serves ${wBoard.json.data?.slots?.length ?? 0} slots`);
+    const wBook = await fetch(`${BASE}/api/v1/public/widget/${encodeURIComponent(widgetToken)}`, {
+      method: "POST", headers: { "content-type": "application/json", origin: BASE },
+      body: JSON.stringify({ slotId: (wBoard.json.data.slots as Array<{ id: string }>)[0]?.id, attendeeName: `Widget Visitor ${S}`, attendeeEmail: null, service: null }),
+    });
+    const wBookJson = await wBook.json().catch(() => null);
+    assert(wBook.status === 200 && wBookJson?.data?.referenceCode?.startsWith("BK-"), `public widget booking accepted (${wBookJson?.data?.referenceCode ?? "?"})`);
+    const rotated = await call("POST", `/api/v1/temporal/widgets/${r.json.data.id}/rotate`, {});
+    assert(rotated.status === 200 && rotated.json.data.token !== widgetToken, "widget token rotated (old embeds die)");
+    const deadWidget = await call("GET", `/api/v1/public/widget/${encodeURIComponent(widgetToken)}`);
+    assert(deadWidget.status >= 400, "rotated widget token rejected");
+
+    // external calendar connectors (CalDAV/iCal/Google/Graph templates + subscribe sync)
+    const tpls = await call("GET", "/api/v1/temporal/connectors/templates");
+    assert(tpls.status === 200 && tpls.json.data.some((t: { protocol: string }) => t.protocol === "ICAL_SUBSCRIBE") && tpls.json.data.some((t: { protocol: string }) => t.protocol === "CALDAV"), "connector templates seeded (Google/Graph/CalDAV/iCal)");
+    const conn = await call("POST", "/api/v1/temporal/connectors", { calendarId: smokeCal.id, templateKey: "ical-subscribe", externalId: "https://example.com/feed.ics", direction: "PULL" });
+    assert(conn.status === 200 && conn.json.data.protocol === "ICAL_SUBSCRIBE", "iCal subscribe connector connected");
+    const connList = await call("GET", "/api/v1/temporal/connectors");
+    assert(connList.status === 200 && connList.json.data.length >= 1, "connection listed with status");
+    const syncRes = await call("POST", `/api/v1/temporal/connectors/${conn.json.data.id}/sync`, {});
+    assert(syncRes.status === 200 && (syncRes.json.data.status === "ERROR" || typeof syncRes.json.data.imported === "number"), "connector sync runs (real HTTP; unreachable feed surfaces as ERROR state, not a crash)");
+    const badConn = await call("POST", "/api/v1/temporal/connectors", { calendarId: smokeCal.id, templateKey: "caldav", direction: "PULL" });
+    assert(badConn.status === 422, "CalDAV without credentials rejected");
+
+    // marketplace: create → certify → publish → install → metered
+    const listing = await call("POST", "/api/v1/temporal/marketplace", {
+      code: `smoke-pack-${S}`, name: `Smoke Industry Pack ${S}`, assetKind: "INDUSTRY", version: "1.0.0",
+      bundle: { patterns: [{ name: "Pack standup", dsl: "EVERY WEEKDAY 09:15", type: "WINDOW" }], rules: [{ name: "Pack hours", type: "BUSINESS_HOURS", params: { windows: [{ start: "09:00", end: "18:00" }], days: [1, 2, 3, 4, 5] }, hard: true }] },
+      pricingModel: "REVENUE_SHARE", price: 5000, revenueShareBps: 1500,
+    });
+    assert(listing.status === 200 && listing.json.data.status === "DRAFT", "marketplace listing drafted");
+    const cert = await call("POST", `/api/v1/temporal/marketplace/${listing.json.data.id}/certify`, { decision: "CERTIFIED", note: "smoke certified" });
+    assert(cert.status === 200 && cert.json.data.certification === "CERTIFIED", "listing certified (platform gate)");
+    const pub = await call("POST", `/api/v1/temporal/marketplace/${listing.json.data.id}/publish`, {});
+    assert(pub.status === 200 && pub.json.data.status === "PUBLISHED", "listing published to marketplace");
+    const install = await call("POST", `/api/v1/temporal/marketplace/${listing.json.data.id}/install`, {});
+    assert(install.status === 200 && install.json.data.created.patterns.length === 1 && install.json.data.created.rules.length === 1, `listing installed → ${install.json.data?.created?.patterns?.length ?? 0} pattern(s), ${install.json.data?.created?.rules?.length ?? 0} rule(s)`);
+    const dupInstall = await call("POST", `/api/v1/temporal/marketplace/${listing.json.data.id}/install`, {});
+    assert(dupInstall.status === 409, "duplicate install rejected (versioned upgrades only)");
+    const listing2 = await call("POST", "/api/v1/temporal/marketplace", { code: `smoke-pack-${S}`, name: "v1.1", assetKind: "INDUSTRY", version: "1.1.0", bundle: {} });
+    assert(listing2.status === 200, "same code new version accepted (versioning)");
+    const installs = await call("GET", "/api/v1/temporal/marketplace/installs");
+    assert(installs.status === 200 && installs.json.data.length >= 1, "install ledger visible");
+
+    // metering: usage recorded from real acts, priced, rolled up
+    const met = await call("GET", "/api/v1/temporal/metering/summary?days=30");
+    const metricNames = (met.json.data.metrics as Array<{ metric: string; quantity: number }>).map((m) => m.metric);
+    assert(met.status === 200 && metricNames.includes("APPOINTMENT") && metricNames.includes("EXECUTION") && metricNames.includes("WIDGET_VIEW"), `usage metered across acts (${metricNames.join(", ")})`);
+    const plans = (await call("GET", "/api/v1/billing/subscription")).json.data;
+    const planId = plans?.subscription?.planId ?? plans?.plan?.id;
+    if (planId) {
+      const price = await call("POST", "/api/v1/temporal/metering/prices", { planId, metric: "APPOINTMENT", includedQty: 10, price: 25 });
+      assert(price.status === 200 && Number(price.json.data.priceMinor) === 2500, "metered price set (paise-exact)");
+    }
+    const events = await call("GET", "/api/v1/temporal/metering/events?metric=EXECUTION");
+    assert(events.status === 200 && Array.isArray(events.json.data), "usage event ledger queryable");
+
+    // white-label branding + i18n locale catalog
+    const brand = await call("POST", "/api/v1/temporal/branding", { productName: `Smoke Time ${S}`, primaryColor: "#ff5500", tagline: "Your time, your brand" });
+    assert(brand.status === 200 || brand.status === 402, `branding write gated by plan (${brand.status})`);
+    const loc = await call("POST", "/api/v1/temporal/locales", { code: "hi", name: "Hindi", nativeName: "हिन्दी", strings: { "nav.dashboard": "डैशबोर्ड" }, isDefault: false });
+    assert(loc.status === 200 && loc.json.data.code === "hi", "locale catalog upserted with translation map");
+    const strs = await call("GET", "/api/v1/temporal/locales/strings?code=hi");
+    assert(strs.status === 200 && strs.json.data.strings["nav.dashboard"] === "डैशबोर्ड", "resolved strings merge platform + workspace (i18n live)");
+
+    // SDK + GraphQL consumption surface
+    const sdkTargets = await call("GET", "/api/v1/temporal/sdk/targets");
+    assert(sdkTargets.status === 200 && sdkTargets.json.data.length === 8, `SDK targets available (${(sdkTargets.json.data as string[]).join(", ")})`);
+    const sdk = await call("GET", "/api/v1/temporal/sdk?language=typescript");
+    assert(sdk.status === 200 && sdk.json.data.content.includes("class TemporalClient") && sdk.json.data.content.includes("listCalendars"), "TypeScript SDK generated from the live route descriptor");
+    const pySdk = await call("GET", "/api/v1/temporal/sdk?language=python");
+    assert(pySdk.status === 200 && pySdk.json.data.content.includes("class TemporalClient"), "Python SDK generated");
+    const goSdk = await call("GET", "/api/v1/temporal/sdk?language=go");
+    assert(goSdk.status === 200 && goSdk.json.data.content.includes("package omnimark"), "Go SDK generated");
+    const gql = await call("POST", "/api/v1/temporal/graphql", { query: "{ calendars patterns analytics }" });
+    assert(gql.status === 200 && Array.isArray(gql.json.data.calendars) && Array.isArray(gql.json.data.patterns), "GraphQL gateway returns temporal data (read-only)");
+    const gqlBad = await call("POST", "/api/v1/temporal/graphql", { query: "mutation { deleteEverything }" });
+    assert(gqlBad.status === 422, "GraphQL mutations refused (writes stay on RBAC REST)");
+
+    // broker adapters: Kafka/Pulsar transports validated
+    const kafkaNoTopic = await call("POST", "/api/v1/temporal/stream/transports", { name: `Smoke kafka ${S}`, url: "https://broker.example:8082", kind: "KAFKA", platformScope: true });
+    assert(kafkaNoTopic.status === 422, "Kafka transport without topic rejected");
+    const kafka = await call("POST", "/api/v1/temporal/stream/transports", { name: `Smoke kafka ${S}`, url: "https://broker.example:8082", kind: "KAFKA", topic: "temporal-events", eventMatch: "*", platformScope: true });
+    assert(kafka.status === 200 && kafka.json.data.transport.url.includes("topic=temporal-events"), "Kafka broker adapter configured (topic in transport url)");
+    await call("DELETE", `/api/v1/temporal/stream/transports/${kafka.json.data.transport.id}`);
 
     // schedule-health monitor over everything centralized
     const mon = await call("GET", "/api/v1/temporal/monitor");

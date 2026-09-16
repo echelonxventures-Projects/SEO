@@ -25,7 +25,8 @@ All under `/api/v1`. Permission column in brackets.
 | Analytics | `GET /temporal/analytics?days` · `GET /temporal/analytics/trends?days` |
 | Config | `GET/POST /temporal/config` |
 | Streams | `GET/POST /temporal/stream/transports` [temporal.read/manage] · `POST .../{id}/toggle` · `POST .../{id}/reset {from}` · `DELETE .../{id}` |
-| Cron | `POST /cron/temporal-materialize` · `/cron/temporal-triggers` · `/cron/temporal-governance` · `/cron/temporal-stream` · `/cron/reports` (Bearer `$CRON_SECRET`) |
+| TPaaS | `GET/POST /temporal/widgets` · `/widgets/{id}` · `/toggle` · `/rotate` · `GET/POST /public/widget/{token}` · `GET/POST /temporal/connectors[/templates]` · `/connectors/{id}/sync` · `GET/POST /temporal/marketplace` · `/publish` · `/retire` · `/certify` · `/install` · `/install`s` · `GET /temporal/metering/{summary,events}` · `POST /temporal/metering/prices` · `GET/POST /temporal/branding` · `GET/POST /temporal/locales` · `GET /temporal/locales/strings` · `GET /public/branding` · `POST /temporal/graphql` · `GET /temporal/sdk?language=` · `GET /temporal/sdk/targets` · `/public/widget.js` · `/embed/{token}` |
+| Cron | `POST /cron/temporal-materialize` · `/cron/temporal-triggers` · `/cron/temporal-governance` · `/cron/temporal-stream` · `/cron/reports` · `/cron/calendar-sync` (Bearer `$CRON_SECRET`) |
 
 ## Auth methods
 

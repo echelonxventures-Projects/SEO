@@ -23,14 +23,14 @@ function parseRules(rows: Array<{ id: string; type: string; params: unknown; har
   return rows.map((r) => ({ id: r.id, type: r.type as RuleLike["type"], params: r.params as Record<string, unknown>, hard: r.hard, name: r.name, priority: r.priority }));
 }
 
-async function orgRuleContext(orgId: string): Promise<{ rules: RuleLike[]; holidays: Set<string>; holidaySets: Map<string, Set<string>>; workingDays: number[] }> {
+async function orgRuleContext(orgId: string): Promise<{ rules: RuleLike[]; holidays: Set<string>; holidaySets: Map<string, Set<string>>; workingDays: number[]; timezone: string }> {
   const [cfg, rows] = await Promise.all([
     db.temporalConfiguration.findUnique({ where: { orgId } }),
     db.temporalRule.findMany({ where: { OR: [{ orgId }, { orgId: null }], active: true } }),
   ]);
   const parsed = parseRules(rows);
   const [holidays, holidaySets] = await Promise.all([resolveHolidaySet(orgId), resolveHolidaySets(orgId, parsed)]);
-  return { rules: parsed, holidays, holidaySets, workingDays: cfg?.workingDays ?? [1, 2, 3, 4, 5] };
+  return { rules: parsed, holidays, holidaySets, workingDays: cfg?.workingDays ?? [1, 2, 3, 4, 5], timezone: cfg?.timezone ?? "UTC" };
 }
 
 /** best-slot optimization: rank open candidate slots for a duration. */
@@ -58,12 +58,12 @@ export async function optimize(ctx: Ctx, input: unknown) {
 
   const busy = await busyFor(ctx.orgId, data.calendarId, data.resourceId ?? null, from, to);
   const open = subtractIntervals(windows, busy);
-  const { rules, holidays, holidaySets, workingDays } = await orgRuleContext(ctx.orgId);
+  const { rules, holidays, holidaySets, workingDays, timezone } = await orgRuleContext(ctx.orgId);
   const candidates = slotWindows(open, 30, data.durationMinutes, from, 60);
   const feasible: Array<{ start: Date; end: Date; score: number; reason: string[] }> = [];
   const nowMidnight = new Date(); nowMidnight.setUTCHours(0, 0, 0, 0);
   for (const c of candidates) {
-    const viols = evaluateConstraints(c, rules, { now, holidays, workingDays, holidaySets });
+    const viols = evaluateConstraints(c, rules, { now, holidays, workingDays, holidaySets, timezone });
     if (isBlocked(viols)) continue;
     let score = 0;
     if (data.prefer === "earliest") score = -c.start.getTime() / 1e9;

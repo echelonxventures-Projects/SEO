@@ -86,16 +86,14 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Marketing",
     items: [
       { href: "/studio", label: "AI studio", icon: Sparkles, permission: "content.read" },
-      { href: "/content", label: "Content calendar", icon: CalendarClock, permission: "content.read" },
+      { href: "/content", label: "Content", icon: CalendarClock, permission: "content.read" },
       { href: "/blogs", label: "Blog posts", icon: FileText, permission: "content.read" },
       { href: "/social", label: "Social channels", icon: Share2, permission: "social.read" },
       { href: "/email", label: "Email marketing", icon: Mail, permission: "email.read" },
       { href: "/campaigns", label: "Campaigns", icon: Megaphone, permission: "campaign.read" },
-      { href: "/calendar", label: "Calendar", icon: CalendarDays, permission: "campaign.read" },
       { href: "/channels", label: "Channels", icon: Layers, permission: "campaign.read" },
       { href: "/audiences", label: "Audiences", icon: UsersRound, permission: "campaign.read" },
       { href: "/offers", label: "Offers", icon: BadgePercent, permission: "campaign.read" },
-      { href: "/system", label: "System", icon: Network, permission: "settings.read" },
       { href: "/seo/keywords", label: "Rankings", icon: Gauge, permission: "seo.read" },
       { href: "/seo/audits", label: "Site audits", icon: Globe, permission: "seo.read" },
       { href: "/seo/backlinks", label: "Backlinks", icon: Link2, permission: "seo.read" },
@@ -131,6 +129,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/team", label: "Team", icon: Users, permission: "member.read" },
       { href: "/billing", label: "Billing", icon: CreditCard, permission: "subscription.read" },
+      { href: "/system", label: "System", icon: Network, permission: "settings.read" },
       { href: "/settings", label: "Settings", icon: Settings, permission: "settings.read" },
     ],
   },
@@ -143,12 +142,27 @@ function useVisibleNav(permissions: string[]) {
     .filter((g) => g.items.length > 0);
 }
 
+export type Brand = {
+  productName: string;
+  primaryColor: string;
+  logoUrl: string | null;
+  hidePoweredBy: boolean;
+};
+
+function tr(strings: Record<string, string>, key: string, fallback: string): string {
+  return strings[key] ?? fallback;
+}
+
 export function Sidebar({
   permissions,
   orgName,
+  brand = { productName: "OmniMark", primaryColor: "#18181b", logoUrl: null, hidePoweredBy: false },
+  strings = {},
 }: {
   permissions: string[];
   orgName: string;
+  brand?: Brand;
+  strings?: Record<string, string>;
 }) {
   const pathname = usePathname();
   const groups = useVisibleNav(permissions);
@@ -156,10 +170,10 @@ export function Sidebar({
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 lg:flex">
       <div className="flex h-14 items-center gap-2 border-b border-zinc-100 px-4 dark:border-zinc-800">
         <Link href="/dashboard" className="flex items-center gap-2 font-semibold tracking-tight">
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900">
-            <Sparkles className="h-3.5 w-3.5" />
+          <span className="flex h-7 w-7 items-center justify-center rounded-lg text-white" style={{ background: brand.primaryColor }}>
+            {brand.logoUrl ? <img src={brand.logoUrl} alt="" className="h-4 w-4" /> : <Sparkles className="h-3.5 w-3.5" />}
           </span>
-          OmniMark
+          {tr(strings, "brand.productName", brand.productName)}
         </Link>
       </div>
       <nav className="flex-1 overflow-y-auto px-3 py-4">
@@ -168,7 +182,7 @@ export function Sidebar({
         )}
         {groups.map((group) => (
           <div key={group.label} className="mb-4">
-            <p className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">{group.label}</p>
+            <p className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">{tr(strings, `navgroup.${group.label.toLowerCase()}`, group.label)}</p>
             {group.items.map((item) => {
               const active = pathname === item.href || pathname.startsWith(item.href + "/");
               const Icon = item.icon;
@@ -184,7 +198,7 @@ export function Sidebar({
                   )}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
-                  {item.label}
+                  {tr(strings, `nav.${item.href.replace(/^\//, "").replace(/\//g, ".") || "home"}`, item.label)}
                 </Link>
               );
             })}

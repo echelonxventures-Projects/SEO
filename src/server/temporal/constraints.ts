@@ -24,6 +24,8 @@ export type ConstraintContext = {
   /** current usage per resource (used for CAPACITY rules) */
   usage?: { used: number; capacity: number };
   now?: Date;
+  /** workspace timezone — the default scope for rules that omit params.timezone */
+  timezone?: string;
   /** per-rule holiday sets keyed by rule id (rule params.holidayCalendarId) */
   holidaySets?: Map<string, Set<string>>;
 };
@@ -64,7 +66,9 @@ function toMin(hhmm: string): number {
 export function evaluateConstraints(iv: Interval, rules: RuleLike[], ctx: ConstraintContext = {}): Violation[] {
   const out: Violation[] = [];
   for (const r of [...rules].sort((a, b) => a.priority - b.priority)) {
-    const tz = typeof r.params.timezone === "string" ? r.params.timezone : "UTC";
+    // A rule with no explicit timezone is scoped to the WORKSPACE timezone —
+    // never silently to UTC (that mis-blocks every non-UTC calendar).
+    const tz = typeof r.params.timezone === "string" ? r.params.timezone : (ctx.timezone ?? "UTC");
     const p0 = wallParts(iv.start, tz);
     switch (r.type) {
       case "WORKING_DAYS": {

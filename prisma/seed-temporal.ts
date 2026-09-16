@@ -225,6 +225,43 @@ export async function seedTemporalGlobals() {
       data: { orgId: null, code: t.code, kind: t.kind as never, name: t.name, industry: t.industry, description: t.description, template: t.template as object, isGlobal: true },
     });
   }
+  // remaining Universal Temporal Library kinds (the full 21-kind catalog)
+  const EXTRA_LIBRARY = [
+    { code: "booking-slot-30", kind: "BOOKING", name: "30-minute booking slots", industry: "generic", description: "Half-hour bookable slots during business hours.",
+      template: { patterns: [{ name: "30-min slot window", dsl: "EVERY WEEKDAY 09:00 FOR 8 HOURS", type: "WINDOW" }], booking: { slotMinutes: 30, durationMinutes: 30, bufferMinutes: 5 } } },
+    { code: "booking-slot-60", kind: "BOOKING", name: "60-minute consultation slots", industry: "professional", description: "Hour-long consultations.",
+      template: { patterns: [{ name: "1-hour slot window", dsl: "EVERY WEEKDAY 09:00 FOR 8 HOURS", type: "WINDOW" }], booking: { slotMinutes: 60, durationMinutes: 60, bufferMinutes: 10 } } },
+    { code: "workflow-onboarding", kind: "WORKFLOW", name: "Client onboarding workflow", industry: "saas", description: "Day 0 welcome, day 1 kickoff, day 7 check-in.",
+      template: { patterns: [{ name: "Onboarding day 0", dsl: "EVERY WEEKDAY 09:00", type: "WINDOW" }, { name: "Week-1 check-in", dsl: "EVERY 7 DAYS 10:00", type: "WINDOW" }], workflow: { steps: ["welcome", "kickoff", "check-in"] } } },
+    { code: "automation-daily-digest", kind: "AUTOMATION", name: "Daily operations digest", industry: "generic", description: "One digest per weekday morning.",
+      template: { patterns: [{ name: "Daily digest", dsl: "EVERY WEEKDAY 08:00", type: "WINDOW" }], automation: { consumer: "NOTIFICATION" } } },
+    { code: "compliance-gdpr-hold", kind: "COMPLIANCE", name: "GDPR data retention hold", industry: "generic", description: "Retention window + audit hold.",
+      template: { rules: [{ name: "GDPR retention", type: "CUSTOM", params: { maxMinutes: 0, retentionDays: 730 }, hard: false }] } },
+    { code: "compliance-soc2", kind: "COMPLIANCE", name: "SOC2 change windows", industry: "tech", description: "Changes only inside approved windows.",
+      template: { rules: [{ name: "Change window", type: "BUSINESS_HOURS", params: { days: [1, 2, 3, 4, 5], windows: [{ start: "10:00", end: "16:00" }] }, hard: true }] } },
+    { code: "launch-t-minus", kind: "LAUNCH", name: "Product launch T-minus plan", industry: "saas", description: "T-7, T-1, T-0, T+1 milestones.",
+      template: { patterns: [{ name: "Launch eve check", dsl: "EVERY WEEKDAY 16:00", type: "WINDOW" }], launch: { milestones: ["T-7", "T-1", "T-0", "T+1"] } } },
+    { code: "support-window-24x5", kind: "SUPPORT_WINDOW", name: "24×5 support window", industry: "generic", description: "Mon–Fri round-the-clock support cover.",
+      template: { patterns: [{ name: "24x5 cover", dsl: "EVERY WEEKDAY 00:00 FOR 24 HOURS", type: "WINDOW" }] } },
+    { code: "peak-window-holiday", kind: "PEAK_WINDOW", name: "Holiday peak window", industry: "retail", description: "Peak trading weeks around the holidays.",
+      template: { patterns: [{ name: "Peak day", dsl: "EVERY DAY 08:00 FOR 14 HOURS", type: "WINDOW" }] } },
+    { code: "capacity-model-seats", kind: "CAPACITY_MODEL", name: "Seat-based capacity model", industry: "generic", description: "Capacity = concurrent seats.",
+      template: { capacity: { model: "SEATS", defaultCapacity: 10, overbook: false } } },
+    { code: "availability-model-shift", kind: "AVAILABILITY_MODEL", name: "Shift-based availability model", industry: "hospitality", description: "Availability derived from shift roster.",
+      template: { patterns: [{ name: "Shift cover", dsl: "EVERY DAY 06:00 FOR 16 HOURS", type: "WINDOW" }], availability: { model: "SHIFT_DERIVED" } } },
+    { code: "ai-template-brief", kind: "AI_TEMPLATE", name: "Campaign brief generator", industry: "generic", description: "AI brief prompt template for campaigns.",
+      template: { ai: { prompt: "Write a concise campaign brief for {{topic}} targeting {{audience}}.", capability: "text" } } },
+    { code: "department-engineering", kind: "DEPARTMENT", name: "Engineering department calendar", industry: "tech", description: "Sprint cadence + on-call rotation.",
+      template: { patterns: [{ name: "Sprint planning", dsl: "EVERY 14 DAYS 10:00", type: "WINDOW" }, { name: "On-call handover", dsl: "EVERY MONDAY 09:00", type: "WINDOW" }] } },
+    { code: "resource-template-fleet", kind: "RESOURCE_TEMPLATE", name: "Fleet resource template", industry: "logistics", description: "Vehicle resources with capacity 1.",
+      template: { resources: [{ type: "VEHICLE", capacity: 1, requiresApproval: false }] } },
+  ];
+  for (const t of EXTRA_LIBRARY) {
+    const existing = await db.libraryTemplate.findFirst({ where: { orgId: null, code: t.code } });
+    if (existing) continue;
+    await db.libraryTemplate.create({ data: { orgId: null, code: t.code, kind: t.kind as never, name: t.name, industry: t.industry, description: t.description, template: t.template as object, isGlobal: true } });
+  }
+
   // fill-in-the-blank placeholder: platform event-stream fabric (inactive until a sink is pasted in)
   const placeholder = await db.streamTransport.findFirst({ where: { orgId: null, name: "Platform event fabric" } });
   if (!placeholder) {
@@ -234,7 +271,35 @@ export async function seedTemporalGlobals() {
     });
     await db.streamTransport.update({ where: { id: t.id }, data: { secretEnc: encryptSecret(secret, `stream:${t.id}`) } });
   }
-  console.log(`  UTP globals: ${TIME_SYSTEMS.length} time systems · ${GLOBAL_RULES.length} rules · ${GLOBAL_HOLIDAYS.length} holiday calendars · ${GLOBAL_FISCAL.length} fiscal · ${LIBRARY.length} library templates · 1 stream placeholder`);
+  // external calendar connector templates (platform library — platforms as data)
+  const CONNECTORS = [
+    { key: "google-calendar", name: "Google Calendar", protocol: "GOOGLE_CALENDAR", config: { authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth", tokenUrl: "https://oauth2.googleapis.com/token", eventsPath: "https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events?timeMin={timeMin}&timeMax={timeMax}&singleEvents=true", scope: "https://www.googleapis.com/auth/calendar", supportsPush: true, supportsPull: true, defaultTimezone: "UTC" } },
+    { key: "microsoft-graph", name: "Outlook / Office 365", protocol: "MICROSOFT_GRAPH", config: { authorizeUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize", tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token", eventsPath: "https://graph.microsoft.com/v1.0/me/calendars/{calendarId}/calendarView?startDateTime={timeMin}&endDateTime={timeMax}", scope: "Calendars.ReadWrite", supportsPush: true, supportsPull: true, defaultTimezone: "UTC" } },
+    { key: "caldav", name: "CalDAV (Apple/Nextcloud/Fastmail)", protocol: "CALDAV", config: { caldavPath: "", supportsPush: true, supportsPull: true, defaultTimezone: "UTC" } },
+    { key: "ical-subscribe", name: "iCal subscribe (.ics URL)", protocol: "ICAL_SUBSCRIBE", config: { supportsPush: false, supportsPull: true, defaultTimezone: "UTC" } },
+    { key: "generic-rest", name: "Generic REST calendar", protocol: "GENERIC_REST", config: { eventsPath: "", supportsPush: false, supportsPull: true, defaultTimezone: "UTC" } },
+  ];
+  for (const c of CONNECTORS) {
+    const existing = await db.calendarConnectorTemplate.findFirst({ where: { orgId: null, key: c.key } });
+    if (!existing) {
+      await db.calendarConnectorTemplate.create({ data: { orgId: null, key: c.key, name: c.name, protocol: c.protocol as never, config: c.config as object } });
+    }
+  }
+
+  // platform locale catalogs (i18n baseline — workspaces may override per string)
+  const LOCALES = [
+    { code: "en-IN", name: "English (India)", nativeName: "English", direction: "ltr", isDefault: true, strings: { "nav.dashboard": "Dashboard", "nav.calendar": "Calendars", "action.book": "Book", "action.cancel": "Cancel" } },
+    { code: "hi", name: "Hindi", nativeName: "हिन्दी", direction: "ltr", isDefault: false, strings: { "nav.dashboard": "डैशबोर्ड", "nav.calendar": "कैलेंडर", "action.book": "बुक करें", "action.cancel": "रद्द करें" } },
+    { code: "ar", name: "Arabic", nativeName: "العربية", direction: "rtl", isDefault: false, strings: { "nav.dashboard": "لوحة التحكم", "nav.calendar": "التقاويم", "action.book": "احجز", "action.cancel": "إلغاء" } },
+  ];
+  for (const l of LOCALES) {
+    const existing = await db.localeCatalog.findFirst({ where: { orgId: null, code: l.code } });
+    if (!existing) {
+      await db.localeCatalog.create({ data: { orgId: null, code: l.code, name: l.name, nativeName: l.nativeName, direction: l.direction, strings: l.strings as object, isDefault: l.isDefault } });
+    }
+  }
+
+  console.log(`  UTP globals: ${TIME_SYSTEMS.length} time systems · ${GLOBAL_RULES.length} rules · ${GLOBAL_HOLIDAYS.length} holiday calendars · ${GLOBAL_FISCAL.length} fiscal · ${LIBRARY.length} library templates · ${CONNECTORS.length} connectors · ${LOCALES.length} locales · 1 stream placeholder`);
 }
 
 // ---------------------------------------------------------------------------

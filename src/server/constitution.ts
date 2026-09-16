@@ -146,7 +146,7 @@ export const CONSTITUTION = {
           "TemporalConfiguration",
         ],
         rules: [
-          "schedules-are-assets-not-attributes", "public-booking-shares-the-workspace-engine", "planetary-frame-via-sol-clock-canonical", "condition-triggers-resolve-or-reject", "share-tokens-always-revocable", "expandPattern-is-the-only-expansion-door", "event-stream-at-least-once-resumable", "dsl-compiles-to-validated-ast", "recurrence-materialized-bounded",
+          "schedules-are-assets-not-attributes", "single-calendar-surface", "public-booking-shares-the-workspace-engine", "planetary-frame-via-sol-clock-canonical", "condition-triggers-resolve-or-reject", "share-tokens-always-revocable", "expandPattern-is-the-only-expansion-door", "event-stream-at-least-once-resumable", "dsl-compiles-to-validated-ast", "recurrence-materialized-bounded",
           "hard-constraints-block-writes", "integer-second-durations", "zone-local-wall-time", "planetary-time-via-time-systems",
           "waitlist-promotion-is-atomic", "capacity-claims-are-conditional-updates", "event-log-append-only",
         ],

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { requireOrgPage } from "@/server/pages";
 import { db } from "@/server/db";
 import { Sidebar, Topbar, MobileNav } from "@/components/shell";
+import { resolveStrings } from "@/server/services/temporal-branding.service";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const viewer = await requireOrgPage();
@@ -16,9 +17,19 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   ]);
 
   const permissions = [...active.permissions];
+  const [branding, i18n] = await Promise.all([
+    db.orgBranding.findUnique({ where: { orgId: active.orgId }, select: { productName: true, primaryColor: true, logoUrl: true, hidePoweredBy: true } }),
+    resolveStrings({ viewer, orgId: active.orgId, userId: viewer.userId, ip: null }, undefined).catch(() => ({ strings: {} as Record<string, string> })),
+  ]);
+  const brand = {
+    productName: branding?.productName ?? "OmniMark",
+    primaryColor: branding?.primaryColor ?? "#18181b",
+    logoUrl: branding?.logoUrl ?? null,
+    hidePoweredBy: branding?.hidePoweredBy ?? false,
+  };
   return (
     <div className="min-h-screen">
-      <Sidebar permissions={permissions} orgName={org.name} />
+      <Sidebar permissions={permissions} orgName={org.name} brand={brand} strings={i18n.strings} />
       <div className="lg:pl-60">
         <Topbar
           user={{ name: viewer.name, email: viewer.email }}

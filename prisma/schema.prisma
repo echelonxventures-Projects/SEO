@@ -283,6 +283,13 @@ model Organization {
   libraryTemplates      LibraryTemplate[]
   temporalConfiguration TemporalConfiguration?
   streamTransports     StreamTransport[]
+  marketplaceListings  MarketplaceListing[]
+  widgetEmbeds         WidgetEmbed[]
+  calendarConnectors   CalendarConnectorTemplate[]
+  calendarConnections  CalendarConnection[]
+  usageEvents          UsageEvent[]
+  branding             OrgBranding?
+  localeCatalogs       LocaleCatalog[]
 
   @@index([status])
 }
@@ -1103,6 +1110,7 @@ model Plan {
 
   currency      Currency       @relation(fields: [currencyCode], references: [code])
   features      PlanFeature[]
+  meteredPrices PlanMeteredPrice[]
   subscriptions Subscription[]
 
   @@index([status, sortOrder])
@@ -3088,6 +3096,8 @@ model Calendar {
   resources    Resource[]
   triggers     TemporalTrigger[]
   availability AvailabilityProfile[]
+  widgets    WidgetEmbed[]
+  connections CalendarConnection[]
 
   @@unique([orgId, code])
   @@index([orgId, kind, archivedAt])
@@ -3739,6 +3749,18 @@ enum LibraryTemplateKind {
   SHIFT_TEMPLATE
   INDUSTRY
   ENTERPRISE
+  BOOKING
+  WORKFLOW
+  AUTOMATION
+  COMPLIANCE
+  LAUNCH
+  SUPPORT_WINDOW
+  PEAK_WINDOW
+  CAPACITY_MODEL
+  AVAILABILITY_MODEL
+  AI_TEMPLATE
+  DEPARTMENT
+  RESOURCE_TEMPLATE
 }
 
 // Temporal Library — reusable, industry & enterprise templates as data.
@@ -3790,6 +3812,9 @@ model TemporalConfiguration {
 
 enum TransportKind {
   HTTP_SINK // signed push (HMAC-SHA256) to any fabric receiver / webhook bridge
+  KAFKA     // broker adapter (connection string + topic in url field)
+  PULSAR    // broker adapter
+  EVENT_MESH
 }
 
 model StreamTransport {
@@ -3814,5 +3839,289 @@ model StreamTransport {
   org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, name])
+  @@index([active])
+}
+
+// ===========================================================================
+// TPaaS CONSUMPTION LAYER — marketplace, widgets, SDK/API, connectors,
+// metered billing, white-label & i18n. These make UTP consumable externally.
+// ===========================================================================
+
+enum ListingStatus {
+  DRAFT
+  PUBLISHED
+  DEPRECATED
+  RETIRED
+}
+
+enum PricingModel {
+  FREE
+  ONE_TIME
+  SUBSCRIPTION
+  USAGE
+  REVENUE_SHARE
+  ENTERPRISE_CONTRACT
+}
+
+enum CertificationStatus {
+  UNCERTIFIED
+  PENDING
+  CERTIFIED
+  REJECTED
+}
+
+model MarketplaceListing {
+  id            String             @id @default(cuid())
+  orgId         String?            // null = platform-published asset
+  publisherName String
+  code          String
+  name          String
+  description   String?
+  assetKind     LibraryTemplateKind @default(ENTERPRISE)
+  version       String             @default("1.0.0")
+  // bundle: the installable payload — template spec, patterns, rules, connectors, shifts
+  bundle        Json               @default("{}")
+  pricingModel  PricingModel       @default(FREE)
+  priceMinor    BigInt             @default(0)
+  currencyCode  String             @default("INR")
+  revenueShareBps Int              @default(0)
+  status        ListingStatus      @default(DRAFT)
+  certification CertificationStatus @default(UNCERTIFIED)
+  certifiedAt   DateTime?
+  certifyNote   String?
+  installs      Int                @default(0)
+  ratingBps     Int                @default(0)
+  publishedAt   DateTime?
+  createdById   String
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  org         Organization?          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  installsLog MarketplaceInstall[]
+
+  @@unique([orgId, code, version])
+  @@index([status, assetKind])
+  @@index([certification])
+}
+
+model MarketplaceInstall {
+  id           String   @id @default(cuid())
+  listingId    String
+  installerOrgId String
+  installedById String
+  version      String
+  createdIds   Json     @default("{}")
+  priceMinor   BigInt   @default(0)
+  revenueShareMinor BigInt @default(0)
+  createdAt    DateTime @default(now())
+
+  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([installerOrgId])
+  @@index([listingId])
+}
+
+// ---------------------------------------------------------------------------
+// Embeddable widgets (booking / availability / calendar / scheduling)
+// ---------------------------------------------------------------------------
+
+enum WidgetKind {
+  BOOKING
+  AVAILABILITY
+  APPOINTMENT
+  SCHEDULING
+  CALENDAR
+}
+
+model WidgetEmbed {
+  id           String     @id @default(cuid())
+  orgId        String
+  calendarId   String
+  name         String
+  kind         WidgetKind @default(BOOKING)
+  token        String     @unique
+  // appearance: { primaryColor, title, subtitle, locale, timezone, showTimezone, theme }
+  appearance   Json       @default("{}")
+  // behavior: { service, durationMinutes, maxAdvanceDays, minNoticeHours, allowWaitlist }
+  behavior     Json       @default("{}")
+  allowedOrigins String[] @default([])
+  active       Boolean    @default(true)
+  views        Int        @default(0)
+  createdById  String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calendar Calendar     @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, kind, active])
+}
+
+// ---------------------------------------------------------------------------
+// External calendar connectors (Google Calendar / CalDAV / Outlook / generic)
+// ---------------------------------------------------------------------------
+
+enum CalendarConnectorProtocol {
+  GOOGLE_CALENDAR
+  MICROSOFT_GRAPH
+  CALDAV
+  ICAL_SUBSCRIBE
+  GENERIC_REST
+}
+
+enum CalendarSyncDirection {
+  PULL
+  PUSH
+  BIDIRECTIONAL
+}
+
+enum CalendarConnectionStatus {
+  PENDING
+  CONNECTED
+  ERROR
+  DISCONNECTED
+}
+
+model CalendarConnectorTemplate {
+  id           String                    @id @default(cuid())
+  orgId        String?
+  key          String
+  name         String
+  protocol     CalendarConnectorProtocol
+  // config: { authorizeUrl, tokenUrl, apiBase, calendarListPath, eventsPath,
+  //           scope, supportsPush, supportsPull, caldavPath, defaultTimezone }
+  config       Json                      @default("{}")
+  active       Boolean                   @default(true)
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+
+  org         Organization?        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connections CalendarConnection[]
+
+  @@unique([orgId, key])
+}
+
+model CalendarConnection {
+  id            String                    @id @default(cuid())
+  orgId         String
+  calendarId    String
+  templateId    String
+  externalId    String?                   // provider calendar id / CalDAV href
+  displayName   String?
+  direction     CalendarSyncDirection     @default(BIDIRECTIONAL)
+  status        CalendarConnectionStatus  @default(PENDING)
+  // credentials: AES-256-GCM envelope { accessToken, refreshToken, expiresAt, username, password }
+  credentialsEnc Json                     @default("{}")
+  syncToken     String?
+  lastSyncAt    DateTime?
+  lastError     String?
+  eventCount    Int                       @default(0)
+  createdById   String
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+
+  org      Organization               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calendar Calendar                   @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  template CalendarConnectorTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([calendarId, templateId, externalId])
+  @@index([orgId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Usage metering & consumption billing
+// ---------------------------------------------------------------------------
+
+enum UsageMetric {
+  APPOINTMENT
+  SCHEDULE
+  TRIGGER
+  EXECUTION
+  RESOURCE_HOUR
+  API_CALL
+  WIDGET_VIEW
+  MARKETPLACE_INSTALL
+  ACTIVE_SEAT
+  STORAGE_EVENT
+}
+
+model UsageEvent {
+  id          String      @id @default(cuid())
+  orgId       String
+  metric      UsageMetric
+  quantity    Int         @default(1)
+  subjectType String?
+  subjectId   String?
+  meta        Json        @default("{}")
+  billed      Boolean     @default(false)
+  billedCycleId String?
+  at          DateTime    @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, metric, at])
+  @@index([orgId, billed])
+}
+
+model PlanMeteredPrice {
+  id          String      @id @default(cuid())
+  planId      String
+  metric      UsageMetric
+  includedQty Int         @default(0)
+  priceMinor  BigInt      @default(0)
+  currencyCode String     @default("INR")
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, metric])
+}
+
+// ---------------------------------------------------------------------------
+// White-label / OEM branding + locale catalog (i18n)
+// ---------------------------------------------------------------------------
+
+model OrgBranding {
+  id             String   @id @default(cuid())
+  orgId          String   @unique
+  productName    String   @default("OmniMark")
+  tagline        String?
+  primaryColor   String   @default("#6366f1")
+  accentColor    String   @default("#22c55e")
+  logoUrl        String?
+  faviconUrl     String?
+  loginBackgroundUrl String?
+  customDomain   String?  @unique
+  emailFromName  String?
+  emailFromAddress String?
+  hidePoweredBy  Boolean  @default(false)
+  oem            Boolean  @default(false)
+  locale         String   @default("en-IN")
+  // translations: { "nav.dashboard": "Dashboard", ... }
+  translations   Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+model LocaleCatalog {
+  id        String   @id @default(cuid())
+  orgId     String?
+  code      String
+  name      String
+  nativeName String
+  direction String   @default("ltr")
+  // strings: { "nav.dashboard": "...", ... }
+  strings   Json     @default("{}")
+  isDefault Boolean  @default(false)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, code])
   @@index([active])
 }
