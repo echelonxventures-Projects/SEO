@@ -1,0 +1,41 @@
+name: omnimark
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: omnimark
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
+      POSTGRES_DB: omnimark
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omnimark"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://omnimark:${PG_PASSWORD}@db:5432/omnimark
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      OMNI_ENCRYPTION_KEYS: ${OMNI_ENCRYPTION_KEYS:?openssl rand -base64 32 → {"1":"..."} }
+      OMNI_TOKEN_SECRET: ${OMNI_TOKEN_SECRET:?openssl rand -base64 32}
+      CRON_SECRET: ${CRON_SECRET:?openssl rand -hex 24}
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      OMNI_RATE_AUTH_PER_MIN: ${OMNI_RATE_AUTH_PER_MIN:-1000}
+      OMNI_RATE_API_PER_MIN: ${OMNI_RATE_API_PER_MIN:-2000}
+      DEMO_EMAIL: ${DEMO_EMAIL:-}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
