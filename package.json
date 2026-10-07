@@ -7,12 +7,17 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset --force",
-    "typecheck": "tsc --noEmit",
-    "test:smoke": "tsx scripts/smoke.ts"
+    "test:smoke": "tsx scripts/smoke.ts",
+    "test:unit": "jest --config __tests__/jest.config.json",
+    "test:unit:coverage": "jest --config __tests__/jest.config.json --coverage",
+    "test:migration-rollback": "tsx scripts/migration-rollback-test.ts",
+    "monitoring:setup": "tsx scripts/setup-monitoring.ts",
+    "monitoring:check": "node scripts/monitoring/check-alerts.js"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",

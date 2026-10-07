@@ -7,7 +7,7 @@ A multi-tenant platform to run an SEO / digital-marketing business end-to-end:
 |---|---|
 | **Stack** | Next.js 16 (App Router, Turbopack) · React 19 · TypeScript · Tailwind 4 · Prisma 7 · PostgreSQL 16 |
 | **Scale** | 134 entities / 111 enums · 316 API routes · 65 screens · constitutional domain layers |
-| **Verified** | `npm run build` ✓ · `tsc --noEmit` ✓ · `eslint` 0 errors ✓ · **337/337 API smoke ×3 (prod mode)** · verified against the `docker compose` prod stack ✓ · **52/52 page renders** ✓ · webhook HMAC verified in-test ✓ |
+| **Verified** | `npm run build` ✓ · `tsc --noEmit` ✓ · `eslint` 0 errors ✓ · **337/337 API smoke ×3 (prod mode)** · verified against the `docker compose` prod stack ✓ · **52/52 page renders** ✓ · webhook HMAC verified in-test ✓ · **unit tests for ledger & tax** ✓ · **migration rollback verified** ✓ |
 
 ## What it does
 
@@ -57,6 +57,17 @@ npm run dev            # http://localhost:3000
 **Demo login** (from seed): `founder@aithink.india` / `DemoPassword#1`
 (workspace *AIthink Digital* with clients, projects, ranks, campaigns, quotes, invoices).
 
+### Testing
+
+**Unit tests** (critical services):
+- `billing.service.ts` — Ledger operations, payment settlement, subscription lifecycle
+- `money.ts` — Tax calculations, invoice computations, GST splitting
+- `webhook.ts` — Signature verification, idempotency
+
+**Integration tests**:
+- `test:smoke` — 337 API assertions against live server
+- `test:migration-rollback` — Verify database migrations rollback cleanly
+
 ### Scripts
 
 | Command | Purpose |
@@ -66,9 +77,46 @@ npm run dev            # http://localhost:3000
 | `npm run lint` | eslint (0-error gate) |
 | `npm run db:migrate` | prisma migrate dev |
 | `npm run db:seed` | seed / re-seed (idempotent) |
-| `npm run test:smoke` | 337-assertion API end-to-end suite (incl. full UTP + TPaaS battery) — set `SMOKE_SINK_HOST=host.docker.internal` to run it against the compose stack |
+| `npm run test:smoke` | 337-assertion API end-to-end suite (incl. full UTP + TPaaS battery) |
+| `npm run test:unit` | Run unit tests for billing ledger and tax engine |
+| `npm run test:unit:coverage` | Unit tests with coverage report |
+| `npm run test:migration-rollback` | Verify migrations can rollback without data loss |
+| `npm run monitoring:setup` | Initialize monitoring thresholds |
+| `npm run monitoring:check` | Check webhook and cron health |
 | `npx tsx scripts/smoke-pages.ts` | render-check all 52+52 screens |
 | `npx prisma studio` | browse data |
+
+## Monitoring & Alerting
+
+The platform includes built-in monitoring for webhook health and cron job staleness.
+
+**Health API endpoints** (require `CRON_SECRET`):
+- `GET /api/v1/monitoring/health` — Comprehensive health report
+- `GET /api/v1/monitoring/webhook-status` — Webhook delivery status
+- `GET /api/v1/monitoring/cron-status` — Cron job health
+- `GET /api/v1/monitoring/alerts/check` — Run checks and return alerts
+
+**Thresholds** (stored in `SystemSetting`, configurable):
+- `alert.webhookFailed24h` (default: 10) — Alert after X failed webhooks in 24h
+- `alert.webhookStaleHours` (default: 24) — Alert if no webhook received in X hours
+- `alert.cronStaleHours` (default: 2) — Alert if cron job is X hours stale
+
+**Usage**:
+```bash
+# Setup default thresholds
+npm run monitoring:setup
+
+# Check for alerts (manual or via cron)
+npm run monitoring:check
+
+# For external alerting (e.g., Slack)
+node scripts/monitoring/check-alerts.js --webhook=https://hooks.slack.com/...
+```
+
+**Recommended cron schedule**:
+```
+*/5 * * * *    curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/v1/monitoring/alerts/check
+```
 
 ## Scheduling
 
