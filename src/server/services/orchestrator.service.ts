@@ -150,6 +150,20 @@ function planUnique(ids: string[]): string[] {
   return Array.from(new Set(ids));
 }
 
+/** Budget-vs-spend guardrail: recorded channel spend must not exceed budget. */
+export async function budgetGuardrail(campaign: {
+  id: string;
+  budgetMinor: bigint | null;
+}): Promise<{ budgetMinor: bigint; spendMinor: bigint; exceeded: boolean }> {
+  const spend = await db.campaignMetric.aggregate({
+    where: { campaignId: campaign.id },
+    _sum: { costMinor: true },
+  });
+  const spendMinor = spend._sum.costMinor ?? 0n;
+  const budgetMinor = campaign.budgetMinor ?? 0n;
+  return { budgetMinor, spendMinor, exceeded: budgetMinor > 0n && spendMinor > budgetMinor };
+}
+
 export async function transitionCampaign(ctx: Ctx, campaignId: string, to: CampaignLifecycle) {
   const campaign = await requireCampaign(ctx, campaignId);
   if (!LIFECYCLE[campaign.lifecycle].includes(to)) {
@@ -161,10 +175,24 @@ export async function transitionCampaign(ctx: Ctx, campaignId: string, to: Campa
   if (to === "PENDING_APPROVAL" && !campaign.composition) {
     throw new AppError(ErrorCodes.ILLEGAL_STATE, "Plan the composition before requesting approval");
   }
+  if (to === "APPROVED") {
+    // Separation of duty: approving a launch needs campaign.approve, not just
+    // campaign.write — the planner cannot approve their own plan.
+    if (!ctx.viewer.active?.permissions.has("campaign.approve")) {
+      throw new AppError(ErrorCodes.FORBIDDEN, "Missing permission: campaign.approve — ask an owner/admin to approve the launch");
+    }
+  }
   if (to === "LIVE") {
     // launch gates: approved flights/audience/channel readiness already checked at plan time
     const flights = campaign.flights.filter((f) => !["ENDED", "CANCELLED", "SKIPPED"].includes(f.status));
     if (flights.length === 0) throw new AppError(ErrorCodes.ILLEGAL_STATE, "No active flights to launch");
+    const guard = await budgetGuardrail(campaign);
+    if (guard.exceeded) {
+      throw new AppError(
+        ErrorCodes.ILLEGAL_STATE,
+        `Budget guardrail: recorded spend (${guard.spendMinor} minor) already exceeds the campaign budget (${guard.budgetMinor} minor). Raise the budget before launching.`,
+      );
+    }
   }
   const stampFields: Partial<Record<CampaignLifecycle, Record<string, Date | string>>> = {
     APPROVED: { approvedAt: new Date() },
@@ -298,6 +326,7 @@ export async function getOrchestration(ctx: Ctx, campaignId: string) {
     },
     flights: campaign.flights,
     offers: await db.campaignOffer.findMany({ where: { campaignId }, include: { offer: { select: { id: true, code: true, name: true, status: true } } } }),
+    guardrail: await budgetGuardrail(campaign),
     learnings,
     allowedTransitions: LIFECYCLE[campaign.lifecycle],
   };

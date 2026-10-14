@@ -105,6 +105,12 @@ export async function runEventDispatcher(): Promise<{ created: number; delivered
   // 2) deliver — purge work owned by deactivated subscriptions, then only
   // attempt pending deliveries for ACTIVE subscriptions (no stale backlog can
   // starve live subscribers).
+  // Orchestrator projection: consume the domains it orchestrates. Runs after
+  // fan-out and never blocks delivery.
+  try {
+    const { reconcileCampaignProjections } = await import("./services/orchestrator-consumer.service");
+    await reconcileCampaignProjections(events);
+  } catch { /* projection errors never block delivery */ }
   await db.eventDelivery.updateMany({
     where: { status: "PENDING", subscription: { active: false } },
     data: { status: "FAILED", error: "subscription deactivated" },

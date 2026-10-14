@@ -778,6 +778,55 @@ async function main() {
     await call("POST", `/api/v1/campaigns/${cid}/transition`, { to: "LIVE" });
     const afterLaunch = await call("GET", `/api/v1/campaigns/${cid}/orchestration`);
     assert(afterLaunch.json.data.lifecycle === "LIVE" && afterLaunch.json.data.flights.every((x: { status: string }) => x.status === "LIVE"), "launch propagated to flights");
+
+    // §4 completion: /api/v1/orchestrator/* contract resolves (registry advertises it)
+    const orchList = await call("GET", "/api/v1/orchestrator");
+    assert(orchList.status === 200 && Array.isArray(orchList.json.data.rows), "orchestrator API surface live");
+    const orchState = await call("GET", `/api/v1/orchestrator/${cid}/orchestration`);
+    assert(orchState.status === 200 && orchState.json.data.lifecycle === "LIVE" && orchState.json.data.guardrail, "orchestrator state + guardrail exposed");
+
+    // §4 completion: separation of duty — a planner (campaign.write only)
+    // cannot approve its own plan; the owner can.
+    const dutyKey = await call("POST", "/api/v1/apikeys", { name: `duty-${stamp}`, scopes: ["campaign.read", "campaign.write"] });
+    const dutySecret = dutyKey.json.data.secret as string;
+    const dutyCamp = await fetch(`${BASE}/api/v1/orchestrator`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${dutySecret}`, origin: BASE, "content-type": "application/json" },
+      body: JSON.stringify({ name: `Duty ${stamp}`, mediaChannelId: emailCh.id, budget: 100 }),
+    });
+    const dutyCampId = (await dutyCamp.json()).data.id as string;
+    await fetch(`${BASE}/api/v1/orchestrator/${dutyCampId}/plan`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${dutySecret}`, origin: BASE, "content-type": "application/json" },
+      body: JSON.stringify({ objective: "duty test", channelIds: [emailCh.id], audienceId: null, contentPostIds: [], offerIds: [], startsAt: new Date().toISOString(), endsAt: new Date(Date.now() + 86400_000).toISOString(), budget: 100, rules: {} }),
+    });
+    await fetch(`${BASE}/api/v1/orchestrator/${dutyCampId}/transition`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${dutySecret}`, origin: BASE, "content-type": "application/json" },
+      body: JSON.stringify({ to: "PENDING_APPROVAL" }),
+    });
+    const dutyApprove = await fetch(`${BASE}/api/v1/orchestrator/${dutyCampId}/transition`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${dutySecret}`, origin: BASE, "content-type": "application/json" },
+      body: JSON.stringify({ to: "APPROVED" }),
+    });
+    assert(dutyApprove.status === 403, "planner without campaign.approve cannot approve (separation of duty)");
+    const ownerApprove = await call("POST", `/api/v1/campaigns/${dutyCampId}/transition`, { to: "APPROVED" });
+    assert(ownerApprove.status === 200, "owner can approve the planner's campaign");
+
+    // §4 completion: budget-vs-spend guardrail blocks an over-budget launch
+    const guardCamp = await call("POST", "/api/v1/campaigns", { name: `Guard ${stamp}`, mediaChannelId: organicCh.id, budget: 100 });
+    const guardId = guardCamp.json.data.id as string;
+    await call("POST", `/api/v1/campaigns/${guardId}/plan`, {
+      objective: "guardrail", channelIds: [organicCh.id], audienceId: null, contentPostIds: [], offerIds: [],
+      startsAt: new Date().toISOString(), endsAt: new Date(Date.now() + 86400_000).toISOString(), budget: 100, rules: {},
+    });
+    await call("POST", `/api/v1/campaigns/${guardId}/metrics`, { date: new Date().toISOString().slice(0, 10), impressions: 100, clicks: 10, cost: 500, conversions: 0, revenue: 0 });
+    await call("POST", `/api/v1/campaigns/${guardId}/transition`, { to: "PENDING_APPROVAL" });
+    await call("POST", `/api/v1/campaigns/${guardId}/transition`, { to: "APPROVED" });
+    const blockedLaunch = await call("POST", `/api/v1/campaigns/${guardId}/transition`, { to: "LIVE" });
+    assert(blockedLaunch.status === 409 && /guardrail/i.test(blockedLaunch.json.error?.message ?? ""), "over-budget launch blocked by guardrail");
+
     await call("POST", `/api/v1/campaigns/${cid}/transition`, { to: "CLOSED" });
     const learned = await call("POST", `/api/v1/campaigns/${cid}/learn`);
     assert(learned.status === 200 && learned.json.data.summary && Array.isArray(learned.json.data.learnings.wins), "learnings snapshot generated");

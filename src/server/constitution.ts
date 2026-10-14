@@ -32,24 +32,24 @@ export const CONSTITUTION = {
     {
       id: "orchestrator",
       name: "Campaign Orchestrator",
-      version: "1.0",
+      version: "1.1",
       purpose: "Composition & execution engine. References domain resources; owns none.",
       blueprint: {
-        schema: ["Campaign", "CampaignComposition", "CampaignLifecycle timestamps"],
-        rules: ["references-validated-on-plan", "no-owned-entities", "launch-requires-approval", "budget-vs-spend-guardrails"],
+        schema: ["Campaign", "CampaignComposition (composition Json)", "CampaignLifecycle timestamps", "LearningsSnapshot"],
+        rules: ["references-validated-on-plan", "no-owned-entities", "launch-requires-approval (campaign.approve)", "budget-vs-spend-guardrails"],
         workflows: ["DRAFT", "PLANNED", "PENDING_APPROVAL", "APPROVED", "LIVE", "CLOSED", "LEARNED"],
-        governance: ["approval by permission", "immutable lifecycle timestamps", "activity trail"],
+        governance: ["approval by permission (campaign.approve)", "immutable lifecycle timestamps", "activity trail"],
         analytics: ["composition rollups", "simulation", "learnings snapshot"],
       },
       events: {
-        emits: ["campaign.planned", "campaign.approved", "campaign.launched", "campaign.closed", "campaign.learned"],
-        consumes: ["flight.*", "content.published", "offer.redeemed", "payment.*"],
+        emits: ["campaign.planned", "campaign.approved", "campaign.launched", "campaign.closed", "campaign.learned", "campaign.budget_exceeded"],
+        consumes: ["flight.ended", "content.published", "offer.redeemed", "payment.recorded"],
       },
       contracts: {
-        api: ["/api/v1/campaigns/wizard", "/api/v1/orchestrator/*"],
+        api: ["/api/v1/campaigns/wizard", "/api/v1/orchestrator/*", "/api/v1/campaigns/[id]/{plan,transition,simulate,learn,orchestration}"],
         extensions: ["strategy plugins", "simulation models"],
       },
-      status: "building",
+      status: "stable",
     },
     {
       id: "client",
