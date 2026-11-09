@@ -31,7 +31,8 @@ function matches(row: Row, where: Where = {}): boolean {
 function applyData(row: Row, data: Record<string, unknown>) {
   for (const [k, v] of Object.entries(data)) {
     if (v && typeof v === "object" && "increment" in (v as object)) {
-      row[k] = (row[k] as bigint) + ((v as { increment: bigint }).increment);
+      const inc = (v as { increment: bigint | number }).increment;
+      row[k] = typeof inc === "bigint" ? (row[k] as bigint) + inc : (row[k] as number) + inc;
     } else {
       row[k] = v;
     }
@@ -101,6 +102,9 @@ export function createFakeDb() {
     billingCycle: table("cycle"),
     subscription: table("sub"),
     activityLog: table("log"),
+    emailCampaign: table("camp"),
+    emailSend: table("send"),
+    organization: table("org"),
     /** Document numbering (`nextDocumentNumber`) — one sequence for all orgs. */
     async $queryRaw() {
       paymentSeq += 1;

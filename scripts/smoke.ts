@@ -477,6 +477,7 @@ async function main() {
   const subEmail = `lead+${Date.now()}@example.com`;
   r = await call("POST", `/api/v1/email/lists/${listId}/subscribers`, { email: subEmail, name: "Smoke Lead" });
   assert(r.status === 200 && r.json.data.status === "SUBSCRIBED", "single opt-in adds directly");
+  const subscriberId = r.json.data.id as string;
   r = await call("POST", "/api/v1/email/campaigns", { listId, subject: "Smoke issue", bodyMarkdown: "Hi there,\n\nThis is the **smoke** body.\n\n— QA" });
   assert(r.status === 200 || r.status === 201, "email campaign drafted");
   const emailCampId = r.json.data.id;
@@ -492,6 +493,28 @@ async function main() {
   assert(openRes.status === 200 && (openRes.headers.get("content-type") ?? "").includes("png"), "open pixel served + tracked");
   r = await call("GET", `/api/v1/email/campaigns/${emailCampId}`);
   assert(r.json.data.opensCount === 1, "open counted exactly once");
+
+  // Unsubscribe: a GET (what mail scanners do) must not unsubscribe; the
+  // RFC 8058 one-click POST from the List-Unsubscribe header must.
+  {
+    const { signToken } = await import("@/server/tokens");
+    const unsubToken = encodeURIComponent(signToken("email_unsub", subscriberId, 3600));
+    const page = await fetch(`${BASE}/unsubscribe/${unsubToken}`);
+    const html = await page.text();
+    const subsAfterGet = await call("GET", `/api/v1/email/lists/${listId}/subscribers`);
+    const stillSubscribed = (subsAfterGet.json?.data as Array<{ id: string; status: string }>)?.find((x) => x.id === subscriberId)?.status;
+    assert(page.status === 200 && html.includes("Unsubscribe from this list?") && stillSubscribed === "SUBSCRIBED", `GET unsubscribe page only asks for confirmation (${stillSubscribed})`);
+    const oneClick = await fetch(`${BASE}/api/v1/public/unsubscribe/${unsubToken}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "List-Unsubscribe=One-Click",
+    });
+    const subsAfterPost = await call("GET", `/api/v1/email/lists/${listId}/subscribers`);
+    const nowStatus = (subsAfterPost.json?.data as Array<{ id: string; status: string }>)?.find((x) => x.id === subscriberId)?.status;
+    assert(oneClick.status === 200 && nowStatus === "UNSUBSCRIBED", `RFC 8058 one-click POST unsubscribes (${oneClick.status} ${nowStatus})`);
+    const forged = await fetch(`${BASE}/api/v1/public/unsubscribe/not-a-token`, { method: "POST", body: "List-Unsubscribe=One-Click" });
+    assert(forged.status >= 400 && forged.status < 500, `forged unsubscribe token rejected (${forged.status})`);
+  }
 
 
   // 23b. Tag templates are data: create a vendor template nobody coded, attach, render

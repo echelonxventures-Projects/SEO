@@ -2042,6 +2042,9 @@ model EmailSend {
   subscriberId String
   status       EmailSendStatus @default(PENDING)
   attempts     Int             @default(0)
+  /// Dispatcher lease: set when a run claims this send, so overlapping runs
+  /// can't both deliver it. A stale lease (crashed run) is reclaimable.
+  claimedAt    DateTime?
   sentAt       DateTime?
   openedAt     DateTime?
   error        String?
