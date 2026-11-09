@@ -953,6 +953,18 @@ async function main() {
       return { status: res.status, json: await res.json().catch(() => null) };
     };
     const { totpCode, generateRecoveryCodes } = await import("@/server/totp");
+    // The server accepts each TOTP step once per user (replay guard), so a
+    // second login in the same 30s window must wait for the next step.
+    let lastLoginStep = -1;
+    const freshTotp = async (sec: string) => {
+      let step = Math.floor(Date.now() / 30_000);
+      if (step <= lastLoginStep) {
+        await new Promise((r) => setTimeout(r, (lastLoginStep + 1) * 30_000 - Date.now() + 250));
+        step = Math.floor(Date.now() / 30_000);
+      }
+      lastLoginStep = step;
+      return totpCode(sec, step);
+    };
     const email = `mfa+${Date.now()}@example.com`;
     let rr = await mcall("POST", "/auth/register", { name: "MFA Tester", email, password: "Str0ng#Pass99", orgName: `MFA Org ${Date.now()}` });
     assert(rr.status === 200 || rr.status === 201, "2fa tester registered");
@@ -978,7 +990,8 @@ async function main() {
     assert(rr.status === 401, `used recovery code rejected on second use (${rr.status} ${JSON.stringify(rr.json ?? "").slice(0, 90)})`);
     rr = await mcall("POST", "/auth/login", { email, password: "Str0ng#Pass99" });
     const mfaToken4 = (rr.json as { meta?: { token?: string } })?.meta?.token;
-    rr = await mcall("POST", "/auth/mfa", { token: mfaToken4, code: totpCode(secret) });
+    const loginCode = await freshTotp(secret);
+    rr = await mcall("POST", "/auth/mfa", { token: mfaToken4, code: loginCode });
     assert(rr.status === 200, `current TOTP works (${rr.status} ${JSON.stringify(rr.json ?? "").slice(0, 120)} token=${String(mfaToken4).slice(0, 12)})`);
 
     // ---- sessions list + revoke others (mfa user has 3 live) ----
@@ -1000,7 +1013,12 @@ async function main() {
     // ---- maintenance mode (founder = platform admin sets it) ----
     rr = await mcall("POST", "/auth/login", { email, password: "Rotated#Pass42" });
     const mtk = (rr.json as { meta?: { token?: string } })?.meta?.token;
-    await mcall("POST", "/auth/mfa", { token: mtk, code: totpCode(secret) });
+    rr = await mcall("POST", "/auth/mfa", { token: mtk, code: loginCode });
+    assert(rr.status === 401, `replayed TOTP code rejected (${rr.status})`);
+    rr = await mcall("POST", "/auth/login", { email, password: "Rotated#Pass42" });
+    const mtk2 = (rr.json as { meta?: { token?: string } })?.meta?.token;
+    rr = await mcall("POST", "/auth/mfa", { token: mtk2, code: await freshTotp(secret) });
+    assert(rr.status === 200, `fresh TOTP step accepted (${rr.status})`);
     const mm = await mcall("GET", "/clients");
     assert(mm.status === 200, "normal access while maintenance is off");
     let maint = await call("POST", "/api/v1/settings/maintenance", { on: true, message: "Smoke maintenance window" });
@@ -1351,7 +1369,7 @@ async function main() {
     });
     let streamSecret = "";
     await new Promise<void>((r) => sink.listen(4598, "0.0.0.0", r));
-    r = await call("POST", "/api/v1/temporal/stream/transports", { name: `Smoke fabric ${S}`, url: `http://${SINK_HOST === "127.0.0.1" ? "127.0.0.1" : "host.docker.internal"}:4598/sink`, eventMatch: "Appointment*", platformScope: true });
+    r = await call("POST", "/api/v1/temporal/stream/transports", { name: `Smoke fabric ${S}`, url: `http://${SINK_HOST === "127.0.0.1" ? "127.0.0.1" : "host.docker.internal"}:4598/sink`, eventMatch: "Booking*", platformScope: true });
     assert(r.status === 200 && r.json.data.secret.startsWith("tsec_"), `stream transport created (${r.status} ${JSON.stringify(r.json ?? "").slice(0, 120)})`);
     streamSecret = r.json.data.secret;
     const streamId = r.json.data.transport.id;

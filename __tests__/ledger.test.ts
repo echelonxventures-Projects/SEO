@@ -1,155 +1,86 @@
-import { mockDb } from "../setup";
-import { settleInvoicePayment, recomputeInvoiceStatus } from "../../src/server/services/ledger";
+import { createFakeDb, type FakeDb } from "./fake-db";
 
-describe("Ledger Service", () => {
-  const ctx = {
-    orgId: "org_123",
-    userId: "user_123",
-    viewer: { active: { roleCode: "OWNER" } },
-    ip: "127.0.0.1",
-  };
+jest.mock("../src/server/db", () => ({ db: {} }));
 
+import { recomputeInvoiceStatus, settleInvoicePayment } from "../src/server/services/ledger";
+
+type Tx = Parameters<typeof settleInvoicePayment>[0];
+
+async function seedInvoice(db: FakeDb, over: Record<string, unknown> = {}) {
+  return db.invoice.create({
+    data: {
+      orgId: "org_1",
+      clientId: "client_1",
+      status: "SENT",
+      totalMinor: 10_000n,
+      paidMinor: 0n,
+      currencyCode: "INR",
+      dueDate: new Date(Date.now() + 86400_000),
+      ...over,
+    },
+  });
+}
+
+const settle = (db: FakeDb, invoiceId: string, amountMinor: bigint) =>
+  settleInvoicePayment(db as unknown as Tx, {
+    orgId: "org_1",
+    invoiceId,
+    clientId: "client_1",
+    amountMinor,
+    currencyCode: "INR",
+    method: "BANK_TRANSFER",
+    paidAt: new Date(),
+    recordedByUserId: "user_1",
+  });
+
+describe("settleInvoicePayment", () => {
+  let db: FakeDb;
   beforeEach(() => {
-    jest.clearAllMocks();
+    db = createFakeDb();
   });
 
-  describe("settleInvoicePayment", () => {
-    it("should settle invoice and update status to PAID", async () => {
-      mockDb.invoice.findUnique.mockResolvedValue({
-        id: "invoice_123",
-        orgId: "org_123",
-        totalMinor: BigInt(10000),
-        paidMinor: BigInt(0),
-        status: "ISSUED",
-      });
-
-      mockDb.invoice.update.mockResolvedValue({
-        id: "invoice_123",
-        status: "PAID",
-        paidMinor: BigInt(10000),
-      });
-
-      await settleInvoicePayment(mockDb, {
-        orgId: "org_123",
-        invoiceId: "invoice_123",
-        amountMinor: BigInt(10000),
-        currencyCode: "INR",
-        method: "BANK_TRANSFER",
-        paidAt: new Date(),
-        recordedByUserId: "user_123",
-      });
-
-      expect(mockDb.invoice.update).toHaveBeenCalled();
-      const updateCall = mockDb.invoice.update.mock.calls[0][0];
-      expect(updateCall.data.status).toBe("PAID");
-      expect(updateCall.data.paidMinor).toBe(BigInt(10000));
-    });
-
-    it("should handle partial payments", async () => {
-      mockDb.invoice.findUnique.mockResolvedValue({
-        id: "invoice_123",
-        totalMinor: BigInt(10000),
-        paidMinor: BigInt(0),
-        status: "ISSUED",
-      });
-
-      await settleInvoicePayment(mockDb, {
-        orgId: "org_123",
-        invoiceId: "invoice_123",
-        amountMinor: BigInt(5000),
-        currencyCode: "INR",
-        method: "BANK_TRANSFER",
-        paidAt: new Date(),
-        recordedByUserId: "user_123",
-      });
-
-      const updateCall = mockDb.invoice.update.mock.calls[0][0];
-      expect(updateCall.data.status).toBe("PARTIALLY_PAID");
-    });
-
-    it("should prevent double-payment", async () => {
-      mockDb.invoice.findUnique.mockResolvedValue({
-        id: "invoice_123",
-        totalMinor: BigInt(10000),
-        paidMinor: BigInt(10000),
-        status: "PAID",
-      });
-
-      await expect(
-        settleInvoicePayment(mockDb, {
-          orgId: "org_123",
-          invoiceId: "invoice_123",
-          amountMinor: BigInt(1000),
-          currencyCode: "INR",
-          method: "BANK_TRANSFER",
-          paidAt: new Date(),
-          recordedByUserId: "user_123",
-        })
-      ).rejects.toThrow();
-    });
+  it("records a numbered payment and marks a fully paid invoice PAID", async () => {
+    const inv = await seedInvoice(db);
+    const payment = await settle(db, inv.id, 10_000n);
+    expect(payment.number).toMatch(/^PAY-\d{4}$/);
+    const after = await db.invoice.findUniqueOrThrow({ where: { id: inv.id } });
+    expect(after.paidMinor).toBe(10_000n);
+    expect(after.status).toBe("PAID");
+    expect(db.domainEvent.rows.map((e) => e.type).sort()).toEqual(["invoice.paid", "payment.recorded"]);
   });
 
-  describe("recomputeInvoiceStatus", () => {
-    it("should transition to OVERDUE when past due date", async () => {
-      mockDb.invoice.findUnique.mockResolvedValue({
-        id: "invoice_123",
-        orgId: "org_123",
-        status: "SENT",
-        totalMinor: BigInt(10000),
-        paidMinor: BigInt(0),
-        dueDate: new Date("2024-01-01"),
-      });
-
-      const result = await recomputeInvoiceStatus(mockDb, "invoice_123");
-      expect(result.status).toBe("OVERDUE");
-    });
-
-    it("should transition to PARTIALLY_PAID when partial payment received", async () => {
-      mockDb.invoice.findUnique.mockResolvedValue({
-        id: "invoice_123",
-        totalMinor: BigInt(10000),
-        paidMinor: BigInt(5000),
-        status: "ISSUED",
-      });
-
-      const result = await recomputeInvoiceStatus(mockDb, "invoice_123");
-      expect(result.status).toBe("PARTIALLY_PAID");
-    });
-
-    it("should remain ISSUED when paid in full on time", async () => {
-      mockDb.invoice.findUnique.mockResolvedValue({
-        id: "invoice_123",
-        totalMinor: BigInt(10000),
-        paidMinor: BigInt(10000),
-        status: "ISSUED",
-        dueDate: new Date("2024-12-31"),
-      });
-
-      const result = await recomputeInvoiceStatus(mockDb, "invoice_123");
-      expect(result.status).toBe("PAID");
-    });
+  it("marks partial payments PARTIALLY_PAID", async () => {
+    const inv = await seedInvoice(db);
+    await settle(db, inv.id, 4_000n);
+    const after = await db.invoice.findUniqueOrThrow({ where: { id: inv.id } });
+    expect(after.status).toBe("PARTIALLY_PAID");
+    expect(db.domainEvent.rows.map((e) => e.type)).toEqual(["payment.recorded"]);
   });
 
-  describe("payment idempotency", () => {
-    it("should track payment attempts", async () => {
-      mockDb.invoice.findUnique.mockResolvedValue({
-        id: "invoice_123",
-        totalMinor: BigInt(10000),
-        paidMinor: BigInt(0),
-        status: "ISSUED",
-      });
+  it("refuses payments above the outstanding balance", async () => {
+    const inv = await seedInvoice(db, { paidMinor: 6_000n });
+    await expect(settle(db, inv.id, 5_000n)).rejects.toThrow("exceeds the outstanding balance");
+    expect(db.payment.rows).toHaveLength(0);
+  });
 
-      await settleInvoicePayment(mockDb, {
-        orgId: "org_123",
-        invoiceId: "invoice_123",
-        amountMinor: BigInt(10000),
-        currencyCode: "INR",
-        method: "BANK_TRANSFER",
-        paidAt: new Date(),
-        recordedByUserId: "user_123",
-      });
+  it.each(["DRAFT", "VOID"])("refuses to settle %s invoices", async (status) => {
+    const inv = await seedInvoice(db, { status });
+    await expect(settle(db, inv.id, 100n)).rejects.toThrow("draft or void");
+  });
+});
 
-      expect(mockDb.invoice.update).toHaveBeenCalled();
-    });
+describe("recomputeInvoiceStatus", () => {
+  it("flags unpaid invoices past due as OVERDUE", async () => {
+    const db = createFakeDb();
+    const inv = await seedInvoice(db, { dueDate: new Date(Date.now() - 86400_000) });
+    await recomputeInvoiceStatus(db as unknown as Tx, inv.id);
+    expect((await db.invoice.findUniqueOrThrow({ where: { id: inv.id } })).status).toBe("OVERDUE");
+  });
+
+  it("leaves DRAFT invoices untouched", async () => {
+    const db = createFakeDb();
+    const inv = await seedInvoice(db, { status: "DRAFT", paidMinor: 10_000n });
+    await recomputeInvoiceStatus(db as unknown as Tx, inv.id);
+    expect((await db.invoice.findUniqueOrThrow({ where: { id: inv.id } })).status).toBe("DRAFT");
   });
 });

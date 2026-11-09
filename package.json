@@ -17,7 +17,10 @@
     "test:unit:coverage": "jest --config __tests__/jest.config.json --coverage",
     "test:migration-rollback": "tsx scripts/migration-rollback-test.ts",
     "monitoring:setup": "tsx scripts/setup-monitoring.ts",
-    "monitoring:check": "node scripts/monitoring/check-alerts.js"
+    "monitoring:check": "node scripts/monitoring/check-alerts.js",
+    "cron": "node scripts/cron-runner.mjs",
+    "cron:once": "CRON_ONCE=1 node scripts/cron-runner.mjs",
+    "db:drift": "node scripts/check-schema-drift.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
@@ -39,14 +42,17 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
+    "@types/jest": "^29.5.14",
     "@types/node": "^20",
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.5",
+    "jest": "^29.7.0",
     "prisma": "^7.10.0",
     "tailwindcss": "^4",
+    "ts-jest": "^29.4.15",
     "tsx": "^4.23.13",
     "typescript": "^5"
   },
