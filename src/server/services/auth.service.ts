@@ -6,9 +6,10 @@ import { logActivity } from "../audit";
 import { sendMail } from "../mail";
 import { signToken, verifyToken } from "../tokens";
 import { decryptSecret, encryptSecret } from "../crypto";
-import { generateTotpSecret, otpauthUri, verifyTotp, generateRecoveryCodes, hashRecoveryCode } from "../totp";
+import { generateTotpSecret, otpauthUri, verifyTotp, matchTotpStep, generateRecoveryCodes, hashRecoveryCode } from "../totp";
 import { createSession } from "../sessions";
 import { z } from "zod";
+import { Prisma } from "@/generated/prisma/client";
 import { emailSchema, nameish, passwordSchema } from "../schemas";
 import { bootstrapOrganization, getRoleByCode, uniqueOrgSlug } from "./org-defaults";
 
@@ -119,6 +120,12 @@ export async function register(input: unknown, meta: { ip: string | null; userAg
   return { userId: result.user.id, orgId: result.org.id, session };
 }
 
+let dummyHashPromise: Promise<string> | null = null;
+function dummyHash(): Promise<string> {
+  dummyHashPromise ??= hashPassword(randomToken(18));
+  return dummyHashPromise;
+}
+
 export const loginSchema = z.object({ email: emailSchema, password: z.string().min(1).max(200) });
 
 export async function login(input: unknown, meta: { ip: string | null; userAgent: string | null }) {
@@ -128,7 +135,12 @@ export async function login(input: unknown, meta: { ip: string | null; userAgent
 
   const fail = () => new AppError(ErrorCodes.INVALID_CREDENTIALS, "Incorrect email or password");
 
-  if (!user || !user.passwordHash) throw fail();
+  if (!user || !user.passwordHash) {
+    // Spend the same bcrypt work as a real check so response time doesn't
+    // reveal which emails have accounts.
+    await verifyPassword(data.password, await dummyHash());
+    throw fail();
+  }
   if (user.lockedUntil && user.lockedUntil > new Date()) {
     const mins = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
     throw new AppError(ErrorCodes.ACCOUNT_LOCKED, `Account temporarily locked. Try again in ${mins} minute(s).`);
@@ -184,10 +196,29 @@ export async function completeMfaLogin(
   if (!user?.totpSecretEnc || !user.totpEnabledAt) {
     throw new AppError(ErrorCodes.FORBIDDEN, "Two-factor is not set up for this account");
   }
+  // The lockout must hold at the second factor too, or someone who knows the
+  // password can keep guessing 6-digit codes after the account locks.
+  if (user.lockedUntil && user.lockedUntil > new Date()) {
+    const mins = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
+    throw new AppError(ErrorCodes.ACCOUNT_LOCKED, `Account temporarily locked. Try again in ${mins} minute(s).`);
+  }
+  if (user.status !== "ACTIVE") {
+    throw new AppError(ErrorCodes.FORBIDDEN, "This account is suspended. Contact support.");
+  }
   const secret = decryptSecret(user.totpSecretEnc, `totp:${user.id}`);
-  let ok = verifyTotp(secret, code);
+  // A TOTP code is single-use: its time step must be newer than the last one
+  // accepted, claimed atomically so two concurrent submits can't both pass.
+  const step = matchTotpStep(secret, code);
+  let ok = false;
+  if (step !== null) {
+    const claimed = await db.user.updateMany({
+      where: { id: user.id, OR: [{ totpLastStep: null }, { totpLastStep: { lt: step } }] },
+      data: { totpLastStep: step },
+    });
+    ok = claimed.count > 0;
+  }
   let usedRecovery: string | null = null;
-  if (!ok) {
+  if (!ok && step === null) {
     const h = hashRecoveryCode(code);
     if (user.recoveryCodesHash.includes(h)) {
       ok = true;
@@ -225,8 +256,13 @@ export async function completeMfaLogin(
 
 /** Start 2FA: returns secret + otpauth URI; activation only happens on confirm. */
 export async function beginTotpSetup(userId: string) {
-  const secret = generateTotpSecret();
   const user = await db.user.findUniqueOrThrow({ where: { id: userId } });
+  // Re-running setup while 2FA is on would let a hijacked session rebind the
+  // second factor to the attacker's device. Disabling requires the password.
+  if (user.totpEnabledAt) {
+    throw new AppError(ErrorCodes.ILLEGAL_STATE, "Two-factor is already enabled — disable it (with your password) before setting it up again");
+  }
+  const secret = generateTotpSecret();
   await db.user.update({
     where: { id: userId },
     data: { totpSecretEnc: encryptSecret(secret, `totp:${userId}`) },
@@ -236,6 +272,7 @@ export async function beginTotpSetup(userId: string) {
 
 export async function confirmTotpSetup(ctxUserId: string, code: string) {
   const user = await db.user.findUniqueOrThrow({ where: { id: ctxUserId } });
+  if (user.totpEnabledAt) throw new AppError(ErrorCodes.ILLEGAL_STATE, "Two-factor is already enabled");
   if (!user.totpSecretEnc) throw new AppError(ErrorCodes.ILLEGAL_STATE, "Start setup first");
   const secret = decryptSecret(user.totpSecretEnc, `totp:${user.id}`);
   if (!verifyTotp(secret, code)) throw new AppError(ErrorCodes.VALIDATION, "Code did not match — try the current code");
@@ -255,7 +292,8 @@ export async function disableTotp(userId: string, password: string) {
   }
   await db.user.update({
     where: { id: userId },
-    data: { totpEnabledAt: null, totpSecretEnc: undefined, recoveryCodesHash: [] },
+    // `undefined` would mean "leave unchanged" in Prisma — clear it for real.
+    data: { totpEnabledAt: null, totpSecretEnc: Prisma.DbNull, totpLastStep: null, recoveryCodesHash: [] },
   });
   await logActivity(db, { orgId: null, userId, action: "auth.2fa_disabled", ip: null });
 }

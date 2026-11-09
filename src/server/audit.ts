@@ -32,8 +32,25 @@ export async function logActivity(
   });
 }
 
+/**
+ * Resolves the client IP without trusting client-supplied headers.
+ *
+ * `X-Forwarded-For` is a list each proxy APPENDS to, so only the rightmost
+ * entries — those added by proxies we operate — are trustworthy. The leftmost
+ * value is whatever the client sent and must never key rate limits or
+ * lockouts. `OMNI_TRUSTED_PROXY_HOPS` is the number of reverse proxies in
+ * front of the app (default 1; set 0 when the app is exposed directly).
+ */
 export function clientIp(headers: Headers): string | null {
+  const raw = Number(process.env.OMNI_TRUSTED_PROXY_HOPS ?? "1");
+  const hops = Number.isInteger(raw) && raw >= 0 ? raw : 1;
+  if (hops === 0) return null;
   const fwd = headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return headers.get("x-real-ip");
+  if (fwd) {
+    const chain = fwd.split(",").map((s) => s.trim()).filter(Boolean);
+    const ip = chain[Math.max(0, chain.length - hops)];
+    if (ip && /^[0-9a-fA-F:.]{2,45}$/.test(ip)) return ip;
+  }
+  const real = headers.get("x-real-ip")?.trim();
+  return real && /^[0-9a-fA-F:.]{2,45}$/.test(real) ? real : null;
 }

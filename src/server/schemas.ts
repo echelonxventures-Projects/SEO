@@ -72,7 +72,13 @@ export const dateSchema = z.union([
 
 export const nameish = z.string().trim().min(1).max(160);
 export const longText = z.string().trim().max(8000);
-export const urlish = z.string().trim().url().max(2000);
+/** http(s) only — `javascript:`, `data:`, `file:` etc. are never valid user URLs. */
+export const urlish = z
+  .string()
+  .trim()
+  .url()
+  .max(2000)
+  .refine((v) => /^https?:\/\//i.test(v), { message: "URL must start with http:// or https://" });
 
 export const phoneish = z.string().trim().max(32);
 export const codeish = z

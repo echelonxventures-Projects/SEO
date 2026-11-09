@@ -1,6 +1,7 @@
 import type { AiModelConfig } from "@/generated/prisma/client";
 import { AppError, ErrorCodes } from "../errors";
 import type { AiProviderAdapter, AudioResult, ImageResult, TextRequest, TextResult } from "./types";
+import { guardedFetch as fetch } from "../net-guard"; // SSRF-guarded: workspace-controlled URLs
 
 const DEFAULT_BASE = "https://api.openai.com/v1";
 

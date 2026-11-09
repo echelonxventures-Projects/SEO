@@ -8,6 +8,11 @@ import { NextResponse, type NextRequest } from "next/server";
  */
 export function proxy(request: NextRequest) {
   const isProd = process.env.NODE_ENV === "production";
+  // Embeddable widget documents must be frameable by third-party sites. The
+  // per-widget origin allowlist is enforced by the /embed page itself (it
+  // renders nothing for a non-allowlisted embedder), so framing is opened
+  // here and X-Frame-Options is omitted for these paths only.
+  const embeddable = request.nextUrl.pathname.startsWith("/embed/");
   const incoming = request.headers.get("x-request-id");
   const rid = incoming && /^[\w.-]{1,64}$/.test(incoming) ? incoming : crypto.randomUUID();
   const csp = [
@@ -21,7 +26,7 @@ export function proxy(request: NextRequest) {
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
-    "frame-ancestors 'none'",
+    embeddable ? "frame-ancestors *" : "frame-ancestors 'none'",
     isProd ? "upgrade-insecure-requests" : "",
   ]
     .filter(Boolean)
@@ -33,7 +38,7 @@ export function proxy(request: NextRequest) {
   response.headers.set("Content-Security-Policy", csp);
   response.headers.set("x-request-id", rid);
   response.headers.set("X-Content-Type-Options", "nosniff");
-  response.headers.set("X-Frame-Options", "DENY");
+  if (!embeddable) response.headers.set("X-Frame-Options", "DENY");
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   response.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(self)");
   if (isProd) {

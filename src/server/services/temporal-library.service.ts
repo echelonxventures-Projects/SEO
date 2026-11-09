@@ -8,7 +8,7 @@ import { z } from "zod";
 import { db } from "../db";
 import { AppError, ErrorCodes } from "../errors";
 import { nameish, longText } from "../schemas";
-import { audit, requireOwned, assertWritable } from "./common";
+import { audit, requireOwned, assertWritable, requireOwnedForWrite } from "./common";
 import { emit } from "../events";
 import { govern, replayAggregate, snapshotAt, applyRetention } from "./temporal-governance";
 import type { Ctx } from "./common";
@@ -167,7 +167,7 @@ export async function listRules(ctx: Ctx) {
 
 export async function updateRule(ctx: Ctx, id: string, input: unknown) {
   const data = ruleSchema.partial().parse(input);
-  const r = await requireOwned(await db.temporalRule.findUnique({ where: { id } }), "Rule", ctx.orgId);
+  const r = await requireOwnedForWrite(await db.temporalRule.findUnique({ where: { id } }), "Rule", ctx);
   const updated = await db.temporalRule.update({ where: { id }, data: { ...data, params: data.params as object | undefined } });
   await audit(db, ctx, "rule.updated", undefined, r.id);
   await db.temporalVersion.create({
@@ -177,7 +177,7 @@ export async function updateRule(ctx: Ctx, id: string, input: unknown) {
 }
 
 export async function deleteRule(ctx: Ctx, id: string) {
-  const r = await requireOwned(await db.temporalRule.findUnique({ where: { id } }), "Rule", ctx.orgId);
+  const r = await requireOwnedForWrite(await db.temporalRule.findUnique({ where: { id } }), "Rule", ctx);
   await db.temporalRule.update({ where: { id }, data: { active: false } });
   await audit(db, ctx, "rule.retired", undefined, r.id);
   return { retired: true };

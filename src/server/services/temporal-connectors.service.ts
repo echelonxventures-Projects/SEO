@@ -14,6 +14,7 @@ import { audit } from "./common";
 import { emit } from "../events";
 import type { Ctx } from "./common";
 import { requireCalendarWrite } from "./temporal.service";
+import { guardedFetch as fetch } from "../net-guard"; // SSRF-guarded: workspace-controlled URLs
 
 function credAad(id: string): string {
   return `calconn:${id}`;

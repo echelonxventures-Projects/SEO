@@ -6,6 +6,7 @@ import { sha256 } from "../crypto";
 import type { DeviceType, Prisma, SnapshotSource } from "@/generated/prisma/client";
 import type { Ctx } from "./common";
 import { assertCapacity, assertFeature, assertWritable, audit, requireOwned } from "./common";
+import { guardedFetch as fetch } from "../net-guard"; // SSRF-guarded: workspace-controlled URLs
 
 // ---------------------------------------------------------------------------
 // Keywords

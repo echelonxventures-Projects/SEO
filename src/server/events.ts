@@ -3,6 +3,7 @@ import { db } from "./db";
 import { decryptSecret, encryptSecret } from "./crypto";
 import { AppError, ErrorCodes } from "./errors";
 import type { Prisma } from "@/generated/prisma/client";
+import { assertPublicUrl, guardedFetch as fetch } from "./net-guard"; // SSRF-guarded: workspace-controlled URLs
 
 export type EmitInput = {
   type: string; // "domain.action"
@@ -50,9 +51,11 @@ function matches(pattern: string, type: string): boolean {
 }
 
 export async function createSubscription(input: { orgId: string | null; eventMatch: string; url: string; label: string }) {
-  if (!/^https:\/\//.test(input.url) && !/^http:\/\/(localhost|127\.0\.0\.1|host\.docker\.internal)(:\d+)?\//.test(input.url)) {
-    throw new AppError(ErrorCodes.VALIDATION, "Webhook URL must be https (http allowed for localhost testing only)");
+  const localTesting = process.env.NODE_ENV !== "production" || process.env.OMNI_ALLOW_PRIVATE_EGRESS === "1";
+  if (!/^https:\/\//.test(input.url) && !(localTesting && /^http:\/\/(localhost|127\.0\.0\.1|host\.docker\.internal)(:\d+)?\//.test(input.url))) {
+    throw new AppError(ErrorCodes.VALIDATION, "Webhook URL must be https (http to localhost is allowed outside production only)");
   }
+  await assertPublicUrl(input.url); // refuse internal targets up front, not just at delivery
   const pat = input.eventMatch;
   if (pat !== "*" && !TYPE_RE.test(pat)) {
     throw new AppError(ErrorCodes.VALIDATION, 'eventMatch must be an event type ("offer.redeemed"), a prefix ("offer.*"), or "*"');
@@ -197,9 +200,13 @@ export async function listEvents(orgId: string, prefix?: string) {
   });
 }
 
-export async function listSubscriptions(orgId: string) {
+/**
+ * Platform-scoped subscriptions (orgId = null) receive events from EVERY
+ * tenant; only platform admins may see, toggle or inspect them.
+ */
+export async function listSubscriptions(orgId: string, includePlatform = false) {
   const rows = await db.eventSubscription.findMany({
-    where: { OR: [{ orgId }, { orgId: null }] },
+    where: includePlatform ? { OR: [{ orgId }, { orgId: null }] } : { orgId },
     orderBy: { createdAt: "desc" },
   });
   return rows.map((r) => ({
@@ -214,15 +221,19 @@ export async function listSubscriptions(orgId: string) {
   }));
 }
 
-export async function toggleSubscription(ctxOrgId: string, id: string, active: boolean) {
+function visible(s: { orgId: string | null } | null, orgId: string, includePlatform: boolean): boolean {
+  if (!s) return false;
+  return s.orgId === orgId || (s.orgId === null && includePlatform);
+}
+
+export async function toggleSubscription(ctxOrgId: string, id: string, active: boolean, includePlatform = false) {
   const s = await db.eventSubscription.findUnique({ where: { id } });
-  if (!s) throw new AppError(ErrorCodes.NOT_FOUND, "Subscription not found");
-  if (s.orgId !== null && s.orgId !== ctxOrgId) throw new AppError(ErrorCodes.NOT_FOUND, "Subscription not found");
+  if (!visible(s, ctxOrgId, includePlatform)) throw new AppError(ErrorCodes.NOT_FOUND, "Subscription not found");
   await db.eventSubscription.update({ where: { id }, data: { active } });
 }
 
-export async function recentDeliveries(orgId: string, subscriptionId: string) {
+export async function recentDeliveries(orgId: string, subscriptionId: string, includePlatform = false) {
   const s = await db.eventSubscription.findUnique({ where: { id: subscriptionId } });
-  if (!s || (s.orgId !== null && s.orgId !== orgId)) throw new AppError(ErrorCodes.NOT_FOUND, "Subscription not found");
+  if (!visible(s, orgId, includePlatform)) throw new AppError(ErrorCodes.NOT_FOUND, "Subscription not found");
   return db.eventDelivery.findMany({ where: { subscriptionId }, orderBy: { at: "desc" }, take: 10, include: { event: { select: { type: true } } } });
 }

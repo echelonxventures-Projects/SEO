@@ -35,17 +35,26 @@ export function totpCode(secretB32: string, counter = Math.floor(Date.now() / 10
   return String(code).padStart(DIGITS, "0");
 }
 
-/** Verifies with ±1 step skew, constant-time compare. */
-export function verifyTotp(secretB32: string, code: string): boolean {
+/**
+ * Returns the time step (counter) the code matched, with ±1 step skew and a
+ * constant-time compare, or null. Callers that must prevent replay persist
+ * the step and only accept strictly newer ones.
+ */
+export function matchTotpStep(secretB32: string, code: string, nowMs = Date.now()): number | null {
   const norm = code.replace(/\D/g, "");
-  if (norm.length !== DIGITS) return false;
-  const now = Math.floor(Date.now() / 1000 / PERIOD);
+  if (norm.length !== DIGITS) return null;
+  const now = Math.floor(nowMs / 1000 / PERIOD);
   for (const skew of [0, 1, -1]) {
     const a = Buffer.from(norm.padEnd(6, "0"));
     const b = Buffer.from(totpCode(secretB32, now + skew).padEnd(6, "0"));
-    if (a.length === b.length && timingSafeEqual(a, b)) return true;
+    if (a.length === b.length && timingSafeEqual(a, b)) return now + skew;
   }
-  return false;
+  return null;
+}
+
+/** Verifies with ±1 step skew, constant-time compare. */
+export function verifyTotp(secretB32: string, code: string): boolean {
+  return matchTotpStep(secretB32, code) !== null;
 }
 
 export function otpauthUri(secretB32: string, email: string, issuer = "OmniMark"): string {

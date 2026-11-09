@@ -124,9 +124,41 @@ async function loadByToken(token: string) {
   return w;
 }
 
-export async function publicWidget(token: string, origin: string | null): Promise<WidgetPublic> {
+function normalizeOrigin(value: string): string | null {
+  try {
+    return new URL(value).origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Exact origin match (scheme + host + port). Prefix matching would let
+ * `https://shop.com` admit `https://shop.com.evil.net`. An entry of the form
+ * `https://*.shop.com` admits subdomains of shop.com (not shop.com itself).
+ */
+export function originAllowed(origin: string | null, allowed: string[]): boolean {
+  if (allowed.length === 0) return true;
+  const o = origin ? normalizeOrigin(origin) : null;
+  if (!o) return false;
+  return allowed.some((entry) => {
+    const wild = entry.match(/^(https?):\/\/\*\.(.+?)\/?$/i);
+    if (wild) {
+      const u = new URL(o);
+      return u.protocol === `${wild[1].toLowerCase()}:` && u.hostname.endsWith(`.${wild[2].toLowerCase()}`);
+    }
+    return normalizeOrigin(entry) === o;
+  });
+}
+
+/**
+ * `origin` is the embedding page's origin (Origin header for API calls, the
+ * Referer origin for the iframe document). Pass `undefined` only from
+ * trusted server code that is not acting on behalf of an embedder.
+ */
+export async function publicWidget(token: string, origin: string | null | undefined): Promise<WidgetPublic> {
   const w = await loadByToken(token);
-  if (origin && w.allowedOrigins.length && !w.allowedOrigins.some((o) => origin.startsWith(o))) {
+  if (origin !== undefined && !originAllowed(origin, w.allowedOrigins)) {
     throw new AppError(ErrorCodes.FORBIDDEN, "Origin not allowed for this widget");
   }
   const slots = await db.appointmentSlot.findMany({

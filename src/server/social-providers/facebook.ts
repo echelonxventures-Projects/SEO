@@ -1,6 +1,7 @@
 import { AppError, ErrorCodes } from "../errors";
 import { graphVersion } from "./types";
 import type { PublishInput, PublishResult, SocialAppCreds, SocialProviderAdapter, TokenBundle } from "./types";
+import { guardedFetch as fetch } from "../net-guard"; // SSRF-guarded: workspace-controlled URLs
 
 export const DEFAULT_GRAPH = `https://graph.facebook.com/${graphVersion()}`;
 export const DEFAULT_AUTHORIZE = `https://www.facebook.com/${graphVersion()}/dialog/oauth`;

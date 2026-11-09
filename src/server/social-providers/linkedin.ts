@@ -1,5 +1,6 @@
 import { AppError, ErrorCodes } from "../errors";
 import type { PublishInput, PublishResult, SocialAppCreds, SocialProviderAdapter, TokenBundle } from "./types";
+import { guardedFetch as fetch } from "../net-guard"; // SSRF-guarded: workspace-controlled URLs
 
 export const DEFAULT_AUTHORIZE = "https://www.linkedin.com/oauth/v2/authorization";
 export const DEFAULT_TOKEN = "https://www.linkedin.com/oauth/v2/accessToken";

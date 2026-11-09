@@ -27,6 +27,7 @@ import { audit } from "./common";
 import { emit } from "../events";
 import type { Ctx } from "./common";
 import { meter } from "./temporal-metering.service";
+import { guardedFetch as fetch } from "../net-guard"; // SSRF-guarded: workspace-controlled URLs
 
 const MATCH_RE = /^[A-Za-z][A-Za-z0-9._-]{0,78}\*?$/;
 const MAX_BATCH = 40;
@@ -56,7 +57,7 @@ export const transportSchema = z.object({
 export async function createTransport(ctx: Ctx, input: unknown) {
   const data = transportSchema.parse(input);
   if (data.platformScope && !ctx.viewer.isPlatformAdmin) throw new AppError(ErrorCodes.FORBIDDEN, "Platform fabric needs platform access");
-  if (data.eventMatch !== "*" && !MATCH_RE.test(data.eventMatch)) throw new AppError(ErrorCodes.VALIDATION, 'eventMatch must be "*", an exact type ("BookingCreated") or a prefix ("Appointment*")');
+  if (data.eventMatch !== "*" && !MATCH_RE.test(data.eventMatch)) throw new AppError(ErrorCodes.VALIDATION, 'eventMatch must be "*", an exact type ("BookingCreated") or a prefix ("Booking*")');
   const local = /^http:\/\/(localhost|127\.0\.0\.1|host\.docker\.internal)(:\d+)?\//.test(data.url);
   if (!/^https:\/\//.test(data.url) && !local) {
     throw new AppError(ErrorCodes.VALIDATION, "Sink URL must be https (http allowed for localhost testing only)");
@@ -98,10 +99,16 @@ export async function setTransportActive(ctx: Ctx, id: string, active: boolean) 
 export async function resetTransportCursor(ctx: Ctx, id: string, from?: string) {
   const t = await db.streamTransport.findFirst({ where: { id, OR: [{ orgId: ctx.orgId }, { orgId: null }] } });
   if (!t) throw new AppError(ErrorCodes.NOT_FOUND, "Transport not found");
-  return db.streamTransport.update({
+  // Rewinding the platform fabric replays every workspace's history to its sink.
+  if (t.orgId === null && !ctx.viewer.isPlatformAdmin) throw new AppError(ErrorCodes.FORBIDDEN, "Platform fabric needs platform access");
+  const cursorAt = from ? new Date(from) : new Date(0);
+  if (Number.isNaN(cursorAt.getTime())) throw new AppError(ErrorCodes.VALIDATION, "from must be an ISO timestamp");
+  const updated = await db.streamTransport.update({
     where: { id },
-    data: { cursorAt: from ? new Date(from) : new Date(0), cursorId: "", failCount: 0, lastError: null },
+    data: { cursorAt, cursorId: "", failCount: 0, lastError: null },
   });
+  await audit(db, ctx, "transport.cursor_reset", undefined, id, { from: cursorAt.toISOString(), scope: t.orgId ? "workspace" : "platform" });
+  return updated;
 }
 
 export async function deleteTransport(ctx: Ctx, id: string) {

@@ -11,6 +11,7 @@ import type { UsageMetric } from "@/generated/prisma/enums";
 import { audit } from "./common";
 import type { Ctx } from "./common";
 import { toMinor } from "../money";
+import { AppError, ErrorCodes } from "../errors";
 
 type Db = Prisma.TransactionClient | typeof db;
 
@@ -71,9 +72,14 @@ export const meteredPriceSchema = z.object({
 });
 
 export async function upsertMeteredPrice(ctx: Ctx, input: unknown) {
+  // Plans and their usage prices are platform-wide: a workspace admin must
+  // never be able to reprice usage for every tenant (including themselves).
+  if (!ctx.viewer.isPlatformAdmin) {
+    throw new AppError(ErrorCodes.FORBIDDEN, "Platform-admin only: metered prices apply to every workspace on the plan");
+  }
   const data = meteredPriceSchema.parse(input);
   const plan = await db.plan.findUnique({ where: { id: data.planId } });
-  if (!plan) throw new Error("Plan not found");
+  if (!plan) throw new AppError(ErrorCodes.NOT_FOUND, "Plan not found");
   const existing = await db.planMeteredPrice.findUnique({ where: { planId_metric: { planId: data.planId, metric: data.metric } } });
   const row = existing
     ? await db.planMeteredPrice.update({ where: { id: existing.id }, data: { includedQty: data.includedQty, priceMinor: toMinor(data.price) } })

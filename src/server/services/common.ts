@@ -106,6 +106,27 @@ export async function requireOwned<T extends { orgId: string | null }>(
   return entity;
 }
 
+/**
+ * Like requireOwned, for MUTATIONS. Platform rows (orgId = null) are shared
+ * defaults every workspace reads (GST groups, categories, channels, patterns…);
+ * only a platform admin may change them — otherwise one tenant could disable
+ * or rewrite them for every other tenant.
+ */
+export async function requireOwnedForWrite<T extends { orgId: string | null }>(
+  entity: T | null,
+  label: string,
+  ctx: Pick<Ctx, "orgId" | "viewer">,
+): Promise<T> {
+  const row = await requireOwned(entity, label, ctx.orgId);
+  if (row.orgId === null && !ctx.viewer.isPlatformAdmin) {
+    throw new AppError(
+      ErrorCodes.FORBIDDEN,
+      `${label} is a platform default and is read-only for workspaces — create your own instead`,
+    );
+  }
+  return row;
+}
+
 export function audit(
   client: Prisma.TransactionClient | typeof db,
   ctx: Pick<Ctx, "orgId" | "userId" | "ip">,

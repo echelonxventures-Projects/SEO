@@ -247,9 +247,31 @@ export async function connectDemo(ctx: Ctx) {
   return { id: con.id };
 }
 
-export async function completeConnect(state: string, code: string): Promise<{ connectionId: string; orgId: string }> {
+/**
+ * `callerUserId` is the signed-in user whose browser hit the callback. It must
+ * be the user who started the flow: otherwise an attacker could start a
+ * connection in their own workspace, send the authorize link to a victim, and
+ * receive the victim's social account (and tokens) when the victim approves.
+ */
+export async function completeConnect(
+  state: string,
+  code: string,
+  callerUserId: string | null,
+): Promise<{ connectionId: string; orgId: string }> {
   const pending = await db.oAuthPending.findUnique({ where: { stateHash: sha256(state) } });
   if (!pending || pending.consumedAt || pending.expiresAt < new Date()) {
+    throw new AppError(ErrorCodes.FORBIDDEN, "This sign-in attempt is expired or invalid");
+  }
+  if (!callerUserId || callerUserId !== pending.userId) {
+    throw new AppError(ErrorCodes.FORBIDDEN, "Finish connecting in the same browser session that started it");
+  }
+  // Claim the state atomically BEFORE the code exchange so two concurrent
+  // callbacks can't both complete.
+  const claimed = await db.oAuthPending.updateMany({
+    where: { id: pending.id, consumedAt: null },
+    data: { consumedAt: new Date() },
+  });
+  if (claimed.count === 0) {
     throw new AppError(ErrorCodes.FORBIDDEN, "This sign-in attempt is expired or invalid");
   }
   const tpl = await resolveConnector(pending.connectorKey, pending.orgId);
@@ -259,7 +281,6 @@ export async function completeConnect(state: string, code: string): Promise<{ co
   const verifier = pending.verifierEnc ? decryptSecret(pending.verifierEnc, `oauth:${pending.orgId}:${pending.connectorKey}`) : null;
   const redirectUri = `${process.env.APP_URL ?? ""}/api/v1/social/callback`;
   const bundle: TokenBundle = await adapter.exchangeCode(creds, code, redirectUri, verifier);
-  await db.oAuthPending.update({ where: { id: pending.id }, data: { consumedAt: new Date() } });
 
   const connection = await db.socialConnection.upsert({
     where: {

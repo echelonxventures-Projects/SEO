@@ -11,7 +11,7 @@ export async function listEventsApi(ctx: Ctx, type?: string) {
 }
 
 export async function listSubsApi(ctx: Ctx) {
-  return listSubscriptions(ctx.orgId);
+  return listSubscriptions(ctx.orgId, ctx.viewer.isPlatformAdmin);
 }
 
 export async function createSubApi(ctx: Ctx, input: unknown) {
@@ -21,11 +21,11 @@ export async function createSubApi(ctx: Ctx, input: unknown) {
 }
 
 export async function toggleSubApi(ctx: Ctx, id: string, active: boolean) {
-  await toggleSubscription(ctx.orgId, id, active);
+  await toggleSubscription(ctx.orgId, id, active, ctx.viewer.isPlatformAdmin);
 }
 
 export async function deliveriesApi(ctx: Ctx, subscriptionId: string) {
-  return recentDeliveries(ctx.orgId, subscriptionId);
+  return recentDeliveries(ctx.orgId, subscriptionId, ctx.viewer.isPlatformAdmin);
 }
 
 export type { EmitInput };

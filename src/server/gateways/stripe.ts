@@ -71,13 +71,19 @@ export const stripeProvider: GatewayProvider = {
     if (!secret || !header) {
       throw new AppError(ErrorCodes.WEBHOOK_SIGNATURE, "Missing Stripe webhook secret or signature header");
     }
-    const parts = Object.fromEntries(
-      header.split(",").map((kv) => {
-        const [k, v] = kv.split("=");
-        return [k, v];
-      }),
-    ) as { t?: string; v1?: string };
-    if (!parts.t || !parts.v1) {
+    // Stripe may send several v1 signatures (e.g. during secret rotation).
+    let t: string | undefined;
+    const v1s: string[] = [];
+    for (const kv of header.split(",")) {
+      const idx = kv.indexOf("=");
+      if (idx < 0) continue;
+      const k = kv.slice(0, idx).trim();
+      const v = kv.slice(idx + 1).trim();
+      if (k === "t") t = v;
+      else if (k === "v1") v1s.push(v);
+    }
+    const parts = { t };
+    if (!parts.t || v1s.length === 0) {
       throw new AppError(ErrorCodes.WEBHOOK_SIGNATURE, "Malformed Stripe signature header");
     }
     const timestamp = Number(parts.t);
@@ -88,9 +94,12 @@ export const stripeProvider: GatewayProvider = {
       .createHmac("sha256", secret)
       .update(`${timestamp}.${rawBody}`, "utf8")
       .digest("hex");
-    const a = Buffer.from(parts.v1);
     const b = Buffer.from(expected);
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    const matches = v1s.some((sig) => {
+      const a = Buffer.from(sig);
+      return a.length === b.length && crypto.timingSafeEqual(a, b);
+    });
+    if (!matches) {
       throw new AppError(ErrorCodes.WEBHOOK_SIGNATURE, "Invalid Stripe webhook signature");
     }
     let payload: { id?: string; type?: string };
