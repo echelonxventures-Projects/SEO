@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { clientIp } from "@/server/audit";
 import Link from "next/link";
 import { headers } from "next/headers";
 import { requirePageViewer } from "@/server/pages";
@@ -19,7 +20,7 @@ export default async function CampaignDetailPage({ params }: PageProps<"/campaig
   const h = await headers();
   let data;
   try {
-    data = await getCampaignDetail(ctxOf(viewer, h.get("x-forwarded-for")), id);
+    data = await getCampaignDetail(ctxOf(viewer, clientIp(h)), id);
   } catch {
     notFound();
   }

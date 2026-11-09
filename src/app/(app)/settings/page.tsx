@@ -1,4 +1,5 @@
 import { requirePageViewer } from "@/server/pages";
+import { clientIp } from "@/server/audit";
 import { db } from "@/server/db";
 import { SettingsClient } from "./settings-client";
 import { headers } from "next/headers";
@@ -10,7 +11,7 @@ export const metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
   const viewer = await requirePageViewer();
-  const ctx = ctxOf(viewer, (await headers()).get("x-forwarded-for"));
+  const ctx = ctxOf(viewer, clientIp(await headers()));
   const org = await db.organization.findUniqueOrThrow({
     where: { id: ctx.orgId },
     select: {

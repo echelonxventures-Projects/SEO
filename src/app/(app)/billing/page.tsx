@@ -1,4 +1,5 @@
 import { requirePageViewer } from "@/server/pages";
+import { clientIp } from "@/server/audit";
 import { ctxOf } from "@/server/services/common";
 import { getBillingState } from "@/server/services/billing.service";
 import { headers } from "next/headers";
@@ -9,7 +10,7 @@ export const metadata = { title: "Billing" };
 
 export default async function BillingPage() {
   const viewer = await requirePageViewer();
-  const ctx = ctxOf(viewer, (await headers()).get("x-forwarded-for"));
+  const ctx = ctxOf(viewer, clientIp(await headers()));
   const state = await getBillingState(ctx);
   const permissions = [...viewer.active!.permissions];
 
