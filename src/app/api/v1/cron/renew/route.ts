@@ -10,9 +10,9 @@ export async function POST(
 ): Promise<Response> {
   return route(
     req,
-    { auth: "public", rate: "auth" },
+    { auth: "public", rate: "api" },
     async () => {
-      const { getEnv } = await import("@/server/env"); const provided = (req.headers.get("authorization") ?? "").split(" ")[1] ?? ""; if (!getEnv().CRON_SECRET || provided !== getEnv().CRON_SECRET) { const { AppError, ErrorCodes } = await import("@/server/errors"); throw new AppError(ErrorCodes.UNAUTHENTICATED, "Invalid cron secret"); } const data = await renewDueSubscriptions();
+      const { assertCronSecret, stampCron } = await import("@/server/cron"); assertCronSecret(req); const data = await renewDueSubscriptions(); await stampCron("renew");
       return ok(data ?? null);
     },
   );

@@ -37,6 +37,8 @@ COPY --from=build --chown=app:app /app/prisma.config.ts ./
 # src tree for the seed workflow (`npm run db:seed` = tsx prisma/seed.ts) —
 # the server itself runs entirely from the traced standalone output.
 COPY --from=build --chown=app:app /app/src ./src
+# scheduler (scripts/cron-runner.mjs) runs from the same image
+COPY --from=build --chown=app:app /app/scripts ./scripts
 USER app
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --retries=5 \
