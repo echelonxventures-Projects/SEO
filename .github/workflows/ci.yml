@@ -83,7 +83,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci
+      # NODE_ENV=production (job env) would make npm ci skip devDependencies,
+      # but seed/smoke/migration scripts run under tsx.
+      - run: npm ci --include=dev
       - run: npx prisma generate
       - run: npx prisma migrate deploy
       - name: Schema drift (schema.prisma must match migrations)
