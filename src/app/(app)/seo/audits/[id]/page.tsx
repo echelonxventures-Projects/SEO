@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { clientIp } from "@/server/audit";
 import Link from "next/link";
 import { headers } from "next/headers";
 import { requirePageViewer } from "@/server/pages";
@@ -23,7 +24,7 @@ export default async function AuditDetailPage({ params }: PageProps<"/seo/audits
   const h = await headers();
   let audit;
   try {
-    audit = await getAudit(ctxOf(viewer, h.get("x-forwarded-for")), id);
+    audit = await getAudit(ctxOf(viewer, clientIp(h)), id);
   } catch {
     notFound();
   }

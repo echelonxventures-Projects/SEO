@@ -16,7 +16,13 @@ export async function GET(
     req,
     { auth: "public", rate: "api" },
     async () => {
-      const data = await publicWidget(token, req.headers.get("origin"));
+      // Cross-origin (headless) reads are checked against the allowlist;
+      // same-origin reads come from our own /embed page, which checks the
+      // embedding parent itself.
+      const { getEnv } = await import("@/server/env");
+      const origin = req.headers.get("origin");
+      const own = new URL(getEnv().APP_URL).origin;
+      const data = await publicWidget(token, origin && origin !== own ? origin : undefined);
       return ok(data ?? null);
     },
   );

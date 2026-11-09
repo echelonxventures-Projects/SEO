@@ -4,7 +4,7 @@ import { AppError, ErrorCodes } from "../errors";
 import { bpsSchema, codeish, longText, nameish, paginationSchema, skipTake } from "../schemas";
 import type { ContentScoreKind, ContentVersionStatus, LocalizationStatus } from "@/generated/prisma/client";
 import type { Ctx } from "./common";
-import { assertWritable, audit, requireOwned } from "./common";
+import { assertWritable, audit, requireOwned, requireOwnedForWrite } from "./common";
 import { emit } from "../events";
 
 // ===========================================================================
@@ -189,7 +189,7 @@ export async function upsertContentKind(ctx: Ctx, input: unknown, id?: string) {
   const data = contentKindSchema.parse(input);
   await assertWritable(ctx.orgId);
   if (id) {
-    await requireOwned(await db.contentKind.findUnique({ where: { id } }), "Content kind", ctx.orgId);
+    await requireOwnedForWrite(await db.contentKind.findUnique({ where: { id } }), "Content kind", ctx);
     return db.contentKind.update({ where: { id }, data: { name: data.name, mediaType: String((data.schema as { mediaType?: string }).mediaType ?? "text") } });
   }
   return db.contentKind
@@ -209,7 +209,7 @@ export async function listContentKinds(ctx: Ctx, query: URLSearchParams) {
 }
 
 export async function toggleContentKind(ctx: Ctx, id: string, active: boolean) {
-  await requireOwned(await db.contentKind.findUnique({ where: { id } }), "Content kind", ctx.orgId);
+  await requireOwnedForWrite(await db.contentKind.findUnique({ where: { id } }), "Content kind", ctx);
   return db.contentKind.update({ where: { id }, data: { active } });
 }
 

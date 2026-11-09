@@ -10,9 +10,9 @@ export async function POST(
 ): Promise<Response> {
   return route(
     req,
-    { auth: "public", rate: "auth" },
+    { auth: "public", rate: "api" },
     async () => {
-      const { getEnv } = await import("@/server/env"); const { AppError, ErrorCodes } = await import("@/server/errors"); const provided = (req.headers.get("authorization") ?? "").split(" ")[1] ?? ""; if (!getEnv().CRON_SECRET || provided !== getEnv().CRON_SECRET) throw new AppError(ErrorCodes.UNAUTHENTICATED, "Invalid cron secret"); const data = await sweepFlights();
+      const { assertCronSecret } = await import("@/server/cron"); assertCronSecret(req); const data = await sweepFlights();
       return ok(data ?? null);
     },
   );

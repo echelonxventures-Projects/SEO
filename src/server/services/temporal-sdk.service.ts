@@ -35,6 +35,27 @@ const QUERIES: Record<string, (ctx: Ctx, args: QueryArgs) => Promise<unknown>> =
   analytics: async (ctx, args) => temporalAnalytics(ctx, toParams(args)),
 };
 
+/**
+ * Each field needs the SAME permission as its REST twin — the gateway must
+ * never be a way around RBAC (e.g. reading attendee PII with temporal.read).
+ */
+const FIELD_PERMISSION: Record<keyof typeof QUERIES, string> = {
+  calendars: "temporal.read",
+  patterns: "temporal.read",
+  events: "temporal.read",
+  appointments: "appointment.read",
+  resources: "resource.read",
+  shifts: "workforce.read",
+  availability: "resource.read",
+  triggers: "temporal.read",
+  timeSystems: "temporal.read",
+  agenda: "temporal.read",
+  openSlots: "appointment.read",
+  analytics: "temporal.read",
+};
+
+const MAX_FIELDS = Object.keys(QUERIES).length;
+
 function toParams(args: QueryArgs): URLSearchParams {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(args)) if (v != null) p.set(k, String(v));
@@ -45,10 +66,22 @@ export async function graphql(ctx: Ctx, input: unknown) {
   const { query, variables } = (input ?? {}) as { query?: string; variables?: QueryArgs };
   if (!query || typeof query !== "string") throw new AppError(ErrorCodes.VALIDATION, "A GraphQL `query` string is required");
   if (!/^\s*(query|\{)/i.test(query)) throw new AppError(ErrorCodes.VALIDATION, "Only read queries are supported (no mutations in the temporal gateway)");
-  const fields = [...query.matchAll(/([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\(([^)]*)\))?/g)]
-    .map((m) => m[1])
-    .filter((name) => Object.prototype.hasOwnProperty.call(QUERIES, name));
+  if (query.length > 4_000) throw new AppError(ErrorCodes.VALIDATION, "Query too long");
+  // Deduplicate: `{ analytics analytics … }` must not re-run expensive resolvers.
+  const fields = [...new Set(
+    [...query.matchAll(/([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\(([^)]*)\))?/g)]
+      .map((m) => m[1])
+      .filter((name) => Object.prototype.hasOwnProperty.call(QUERIES, name)),
+  )].slice(0, MAX_FIELDS);
   if (!fields.length) throw new AppError(ErrorCodes.VALIDATION, "No known temporal fields in query. Available: " + Object.keys(QUERIES).join(", "));
+  const held = ctx.viewer.active?.permissions ?? new Set<string>();
+  const denied = fields.filter((f) => !held.has(FIELD_PERMISSION[f as keyof typeof QUERIES]));
+  if (denied.length) {
+    throw new AppError(
+      ErrorCodes.FORBIDDEN,
+      `Missing permission for field(s): ${denied.map((f) => `${f} (${FIELD_PERMISSION[f as keyof typeof QUERIES]})`).join(", ")}`,
+    );
+  }
   const args: QueryArgs = { ...(variables ?? {}) };
   const data: Record<string, unknown> = {};
   for (const f of fields) data[f] = await QUERIES[f](ctx, args);

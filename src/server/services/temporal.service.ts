@@ -11,7 +11,7 @@ import { z } from "zod";
 import { db } from "../db";
 import { AppError, ErrorCodes } from "../errors";
 import { nameish, longText } from "../schemas";
-import { audit, requireOwned, assertWritable } from "./common";
+import { audit, requireOwned, assertWritable, requireOwnedForWrite } from "./common";
 import { emit } from "../events";
 import { govern } from "./temporal-governance";
 import type { Ctx } from "./common";
@@ -343,7 +343,7 @@ export async function getPattern(ctx: Ctx, id: string) {
 
 export async function updatePattern(ctx: Ctx, id: string, input: unknown) {
   const data = patternSchema.partial().parse(input);
-  const pat = await requireOwned(await db.temporalPattern.findUnique({ where: { id } }), "Pattern", ctx.orgId);
+  const pat = await requireOwnedForWrite(await db.temporalPattern.findUnique({ where: { id } }), "Pattern", ctx);
   if (pat.isLibrary) throw new AppError(ErrorCodes.FORBIDDEN, "Library patterns are read-only; clone to customize");
   let patternTimeSystemId: string | null | undefined;
   if (data.timeSystemCode !== undefined) {
@@ -374,7 +374,7 @@ export async function updatePattern(ctx: Ctx, id: string, input: unknown) {
 }
 
 export async function deprecatePattern(ctx: Ctx, id: string) {
-  const pat = await requireOwned(await db.temporalPattern.findUnique({ where: { id } }), "Pattern", ctx.orgId);
+  const pat = await requireOwnedForWrite(await db.temporalPattern.findUnique({ where: { id } }), "Pattern", ctx);
   if (pat.status === "DEPRECATED") return { status: pat.status };
   await db.$transaction(async (tx) => {
     await tx.temporalPattern.update({ where: { id }, data: { status: "DEPRECATED" } });
@@ -881,7 +881,7 @@ export async function updateTemporalConfig(ctx: Ctx, input: unknown) {
 export { compilePattern };
 
 export async function deletePattern(ctx: Ctx, id: string) {
-  const pat = await requireOwned(await db.temporalPattern.findUnique({ where: { id }, include: { _count: { select: { events: true, calendars: true } } } }), "Pattern", ctx.orgId);
+  const pat = await requireOwnedForWrite(await db.temporalPattern.findUnique({ where: { id }, include: { _count: { select: { events: true, calendars: true } } } }), "Pattern", ctx);
   if (pat._count.events + pat._count.calendars > 0) throw new AppError(ErrorCodes.ILLEGAL_STATE, `Pattern is consumed by ${pat._count.events} event(s)/${pat._count.calendars} calendar(s); deprecate instead`);
   if (pat.isLibrary) throw new AppError(ErrorCodes.FORBIDDEN, "Library patterns cannot be deleted by workspaces");
   await db.$transaction(async (tx) => {

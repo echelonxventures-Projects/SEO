@@ -1,42 +1,52 @@
 /**
- * Alerting check script - run via cron or manually
- * Outputs alerts to stdout or sends to external webhook
+ * Alerting check — run via cron or manually.
+ * Calls GET /api/v1/monitoring/alerts/check and prints alerts; optionally
+ * forwards them to a Slack-compatible incoming webhook.
  *
  * Usage:
  *   node scripts/monitoring/check-alerts.js
  *   node scripts/monitoring/check-alerts.js --webhook=https://hooks.slack.com/...
+ *
+ * Exit code 1 when any critical alert is present (or the check itself fails),
+ * so it can gate a cron/uptime monitor.
  */
 
-import { execSync } from "child_process";
-import { readFileSync } from "fs";
+const BASE = (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
+
+function webhookArg() {
+  const arg = process.argv.slice(2).find((a) => a.startsWith("--webhook="));
+  return arg ? arg.slice("--webhook=".length) : null; // URLs may contain "="
+}
 
 async function checkAlerts() {
+  if (!process.env.CRON_SECRET) {
+    console.error("❌ CRON_SECRET is not set");
+    process.exit(1);
+  }
   try {
-    const response = await fetch(`${process.env.APP_URL || "http://localhost:3000"}/api/v1/monitoring/alerts/check`, {
-      headers: {
-        "Authorization": `Bearer ${process.env.CRON_SECRET}`,
-        "Content-Type": "application/json",
-      },
+    const response = await fetch(`${BASE}/api/v1/monitoring/alerts/check`, {
+      headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` },
+      signal: AbortSignal.timeout(30_000),
     });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.data) {
+      throw new Error(`HTTP ${response.status}: ${JSON.stringify(body?.error ?? body)}`);
+    }
+    const data = body.data;
 
-    const data = await response.json();
-    
     if (data.alertCount === 0) {
-      console.log("✅ All systems healthy - no alerts");
+      console.log("✅ All systems healthy — no alerts");
       return;
     }
 
     console.log(`⚠️  Found ${data.alertCount} alert(s):`);
-    
-    data.alerts.forEach((alert) => {
+    for (const alert of data.alerts) {
       const icon = alert.severity === "critical" ? "🚨" : "⚠️";
       console.log(`  ${icon} [${alert.metric}] ${alert.message}`);
-    });
+    }
 
-    // Send to external webhook if configured
-    if (process.argv[2]?.startsWith("--webhook=")) {
-      const webhookUrl = process.argv[2].split("=")[1];
-      
+    const webhookUrl = webhookArg();
+    if (webhookUrl) {
       const slackMessage = {
         text: `🚨 OmniMark Alerts (${data.alertCount} found)`,
         attachments: data.alerts.map((alert) => ({
@@ -48,24 +58,17 @@ async function checkAlerts() {
           ],
         })),
       };
-
-      await fetch(webhookUrl, {
+      const res = await fetch(webhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(slackMessage),
       });
-
-      console.log(`📤 Alert sent to webhook`);
+      console.log(res.ok ? "📤 Alert sent to webhook" : `❌ Webhook responded ${res.status}`);
     }
 
-    // Exit with error code if there are critical alerts
-    const hasCritical = data.alerts.some((a) => a.severity === "critical");
-    if (hasCritical) {
-      process.exit(1);
-    }
-
+    if (data.alerts.some((a) => a.severity === "critical")) process.exit(1);
   } catch (error) {
-    console.error("❌ Failed to check alerts:", error.message);
+    console.error("❌ Failed to check alerts:", error instanceof Error ? error.message : error);
     process.exit(1);
   }
 }

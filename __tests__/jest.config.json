@@ -1,11 +1,24 @@
 {
+  "rootDir": "..",
   "testEnvironment": "node",
-  "extensionsToTreatAsEsm": [".ts"],
+  "roots": ["<rootDir>/__tests__"],
+  "testMatch": ["**/*.test.ts"],
   "moduleNameMapper": {
     "^@/(.*)$": "<rootDir>/src/$1"
   },
   "transform": {
-    "^.+\\.tsx?$": ["ts-jest", { "useESM": true }]
-  },
-  "preset": "ts-jest/presets/default-esm"
+    "^.+\\.tsx?$": [
+      "ts-jest",
+      {
+        "tsconfig": {
+          "module": "commonjs",
+          "moduleResolution": "node",
+          "target": "ES2022",
+          "esModuleInterop": true,
+          "jsx": "react-jsx",
+          "isolatedModules": true
+        }
+      }
+    ]
+  }
 }

@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
-import { route, readJson, AppError, ErrorCodes } from "@/server/api";
+import { route, readJson, AppError, ErrorCodes, invalidateMaintenanceCache } from "@/server/api";
 import { ok } from "@/server/serialize";
 import { db } from "@/server/db";
 import { requireAuth } from "@/server/context";
@@ -14,7 +14,7 @@ export async function GET(): Promise<Response> {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  return route(req, { auth: "required" }, async ({ viewer }) => {
+  return route(req, { auth: "required" }, async ({ viewer, ip }) => {
     requireAuth(viewer);
     if (!viewer!.isPlatformAdmin) {
       throw new AppError(ErrorCodes.FORBIDDEN, "Platform operators control maintenance mode");
@@ -25,7 +25,8 @@ export async function POST(req: NextRequest): Promise<Response> {
       create: { key: "maintenance", value: data },
       update: { value: data },
     });
-    await db.activityLog.create({ data: { action: "platform.maintenance", meta: data } });
+    invalidateMaintenanceCache();
+    await db.activityLog.create({ data: { action: "platform.maintenance", meta: data, userId: viewer!.userId, ip } });
     return ok(data);
   });
 }

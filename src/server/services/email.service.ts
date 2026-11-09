@@ -9,6 +9,8 @@ import type { Ctx } from "./common";
 import { assertWritable, audit, requireOwned } from "./common";
 
 const BATCH_PER_RUN = 40;
+/** A claimed send older than this is assumed abandoned by a crashed run. */
+const CLAIM_LEASE_MS = 10 * 60_000;
 
 // ---------------------------------------------------------------------------
 // Lists & subscribers
@@ -95,7 +97,12 @@ export async function confirmOptin(token: string): Promise<string> {
   return sub.emailNormalized;
 }
 
-/** RFC-8058 one-click: GET performs the unsubscribe idempotently. */
+/**
+ * Idempotent unsubscribe. Only call this from a POST: the RFC 8058 one-click
+ * endpoint (mail clients POST `List-Unsubscribe=One-Click`) or the confirm
+ * button on /unsubscribe/[token]. Never on GET — mail security scanners
+ * prefetch every link in a message and would unsubscribe the recipient.
+ */
 export async function unsubscribe(token: string): Promise<string> {
   const payload = verifyToken("email_unsub", token);
   const sub = await db.subscriber.findUnique({ where: { id: payload.s } });
@@ -276,6 +283,9 @@ async function dispatchOne(
       : campaign.fromEmail
         ? campaign.fromEmail
         : undefined;
+  const tokenPart = encodeURIComponent(to.unsubToken);
+  const unsubPage = `${baseUrl}/unsubscribe/${tokenPart}`;
+  const unsubOneClick = `${baseUrl}/api/v1/public/unsubscribe/${tokenPart}`;
   const greeting = to.name ? escapeHtml(to.name) : "there";
   const html =
     `<!doctype html><html><body style="font-family:system-ui;max-width:560px;margin:auto;color:#18181b">` +
@@ -284,14 +294,19 @@ async function dispatchOne(
     (to.sendId ? `<img src="${baseUrl}/api/v1/public/email/open/${to.sendId}" width="1" height="1" alt="" style="display:none"/>` : "") +
     `<hr/><p style="font-size:12px;color:#71717a">You're receiving this because you subscribed to “${escapeHtml(campaign.list.name)}”` +
     (org ? ` by ${escapeHtml(org.name)}` : "") +
-    `. <a href="${baseUrl}/unsubscribe/${encodeURIComponent(to.unsubToken)}">Unsubscribe</a> (one-click).</p>` +
+    `. <a href="${unsubPage}">Unsubscribe</a>.</p>` +
     `</body></html>`;
   await sendMail({
     to: to.email,
     subject: campaign.subject,
-    text: campaign.bodyMarkdown,
+    text: `${campaign.bodyMarkdown}\n\n--\nUnsubscribe: ${unsubPage}`,
     html,
     from,
+    // RFC 2369 + RFC 8058 one-click (required by Gmail/Yahoo for bulk senders)
+    headers: {
+      "List-Unsubscribe": `<${unsubOneClick}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
   });
 }
 
@@ -312,13 +327,26 @@ export async function runEmailDispatcher(): Promise<{ sent: number; failed: numb
       await db.emailCampaign.update({ where: { id: campaign.id }, data: { status: "SENDING", startedAt: new Date() } });
     }
     const sends = await db.emailSend.findMany({
-      where: { campaignId: campaign.id, status: "PENDING" },
+      where: {
+        campaignId: campaign.id,
+        status: "PENDING",
+        OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(Date.now() - CLAIM_LEASE_MS) } }],
+      },
       take: BATCH_PER_RUN,
       include: { subscriber: true },
     });
     for (const send of sends) {
-      // atomic claim per send row
-      const claim = await db.emailSend.updateMany({ where: { id: send.id, status: "PENDING" }, data: { attempts: { increment: 1 } } });
+      // Atomic lease per send row: an overlapping run (second instance, manual
+      // cron call) sees the fresh claimedAt and skips the row instead of re-sending.
+      const now = new Date();
+      const claim = await db.emailSend.updateMany({
+        where: {
+          id: send.id,
+          status: "PENDING",
+          OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now.getTime() - CLAIM_LEASE_MS) } }],
+        },
+        data: { attempts: { increment: 1 }, claimedAt: now },
+      });
       if (claim.count === 0) continue;
       if (send.subscriber.status !== "SUBSCRIBED") {
         await db.emailSend.update({ where: { id: send.id }, data: { status: "FAILED", error: "subscriber not active" } });
@@ -339,7 +367,7 @@ export async function runEmailDispatcher(): Promise<{ sent: number; failed: numb
       } catch (e) {
         await db.emailSend.update({
           where: { id: send.id },
-          data: { status: send.attempts + 1 >= 3 ? "FAILED" : "PENDING", error: (e instanceof Error ? e.message : "send failed").slice(0, 300) },
+          data: { status: send.attempts + 1 >= 3 ? "FAILED" : "PENDING", claimedAt: null, error: (e instanceof Error ? e.message : "send failed").slice(0, 300) },
         });
         await db.emailCampaign.update({ where: { id: campaign.id }, data: { failedCount: { increment: 1 } } });
         failed++;

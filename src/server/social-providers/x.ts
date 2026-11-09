@@ -1,5 +1,6 @@
 import { AppError, ErrorCodes } from "../errors";
 import type { PublishInput, PublishResult, SocialAppCreds, SocialProviderAdapter, TokenBundle } from "./types";
+import { guardedFetch as fetch } from "../net-guard"; // SSRF-guarded: workspace-controlled URLs
 
 export const DEFAULT_API = "https://api.x.com/2";
 export const DEFAULT_AUTHORIZE = "https://x.com/i/oauth2/authorize";

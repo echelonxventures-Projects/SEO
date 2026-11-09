@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { route } from "@/server/api";
-import { ctxOf } from "@/server/services/common";
+import { audit, ctxOf } from "@/server/services/common";
 import { db } from "@/server/db";
 import { jsonSafe } from "@/server/serialize";
 
@@ -11,7 +11,8 @@ const CAP = 1000;
 /** Full workspace data export (GDPR/portability): every org-owned table. */
 export async function GET(req: NextRequest): Promise<Response> {
   return route(req, { permission: "org.update" }, async ({ viewer, ip }) => {
-    const { orgId } = ctxOf(viewer!, ip);
+    const ctx = ctxOf(viewer!, ip);
+    const { orgId } = ctx;
     const where = { orgId } as const;
     const take = { take: CAP };
     const [
@@ -71,22 +72,32 @@ export async function GET(req: NextRequest): Promise<Response> {
       db.temporalEventLog.findMany({ where, ...take }),
       db.temporalConfiguration.findMany({ where }),
     ]);
+    const data = {
+      organization, clients, contacts, leads, projects, tasks, timeEntries, expenses,
+      serviceItems, quotes, invoices, payments, refunds, keywords, rankSnapshots,
+      backlinks, siteAudits, campaigns, campaignMetrics, contentPosts, trackedLinks,
+      webProperties, mailingLists, subscribers, emailCampaigns, tags, notes,
+      documentSequences, pipelineStages, brandVoices, subscriptions: subscriptionSummary(subscriptions), activity,
+      calendars, temporalPatterns, scheduledEvents, eventOccurrences, appointments,
+      appointmentSlots, resources, resourceBookings, availabilityProfiles, shifts,
+      shiftAssignments, temporalTriggers, temporalEventLog, temporalConfiguration,
+    };
+    // Tables that hit the per-table cap: the export is partial for these and
+    // must say so rather than pass as complete.
+    const truncated = Object.entries(data)
+      .filter(([, rows]) => Array.isArray(rows) && rows.length >= CAP)
+      .map(([name]) => name);
+    await audit(db, ctx, "workspace.data_exported", undefined, orgId, { truncated });
     const payload = {
       exportedAt: new Date().toISOString(),
+      complete: truncated.length === 0,
+      truncated,
+      rowCap: CAP,
       counts: {
         clients: clients.length, projects: projects.length, invoices: invoices.length,
         payments: payments.length, snapshots: rankSnapshots.length,
       },
-      data: {
-        organization, clients, contacts, leads, projects, tasks, timeEntries, expenses,
-        serviceItems, quotes, invoices, payments, refunds, keywords, rankSnapshots,
-        backlinks, siteAudits, campaigns, campaignMetrics, contentPosts, trackedLinks,
-        webProperties, mailingLists, subscribers, emailCampaigns, tags, notes,
-        documentSequences, pipelineStages, brandVoices, subscriptions: subscriptionSummary(subscriptions), activity,
-        calendars, temporalPatterns, scheduledEvents, eventOccurrences, appointments,
-        appointmentSlots, resources, resourceBookings, availabilityProfiles, shifts,
-        shiftAssignments, temporalTriggers, temporalEventLog, temporalConfiguration,
-      },
+      data,
     };
     const filename = `omnimark-export-${orgId}-${new Date().toISOString().slice(0, 10)}.json`;
     return new Response(JSON.stringify(jsonSafe(payload)), {

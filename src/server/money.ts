@@ -142,6 +142,15 @@ export function computeDocument(
       components.length > 0 || taxBps === 0
         ? components
         : [{ code: "TAX", name: "Tax", bps: taxBps }]; // derived from the line's own tax-rate snapshot
+    // splitTaxAcrossComponents hands any shortfall to the components, so a
+    // mismatch must be caught on the RATES, not on the split result —
+    // otherwise an 18% line with only "CGST 9%" prints 18% as CGST.
+    const componentBps = effective.reduce((a, c) => a + c.bps, 0);
+    if (effective.length > 0 && componentBps !== taxBps) {
+      throw new Error(
+        `line tax inconsistent with components: components sum to ${componentBps} bps but line taxBps is ${taxBps}`,
+      );
+    }
     const parts = splitTaxAcrossComponents(line.lineTotalMinor, taxBps, effective);
     const lineTax = parts.reduce((a, b) => a + b, 0n);
     if (lineTax !== line.taxMinor) {

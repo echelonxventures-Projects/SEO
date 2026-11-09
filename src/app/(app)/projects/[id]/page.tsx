@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { clientIp } from "@/server/audit";
 import Link from "next/link";
 import { headers } from "next/headers";
 import { requirePageViewer } from "@/server/pages";
@@ -23,7 +24,7 @@ export default async function ProjectDetailPage({ params }: PageProps<"/projects
   const { id } = await params;
   const viewer = await requirePageViewer();
   const h = await headers();
-  const ctx = ctxOf(viewer, h.get("x-forwarded-for"));
+  const ctx = ctxOf(viewer, clientIp(h));
   let data;
   try {
     data = await getProject(ctx, id);

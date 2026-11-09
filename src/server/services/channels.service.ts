@@ -4,7 +4,7 @@ import { AppError, ErrorCodes } from "../errors";
 import { nameish, urlish } from "../schemas";
 import type { ChannelCostModel, ChannelKind, Prisma } from "@/generated/prisma/client";
 import type { Ctx } from "./common";
-import { assertWritable, audit, requireOwned } from "./common";
+import { assertWritable, audit, requireOwned, requireOwnedForWrite } from "./common";
 
 export const channelSchema = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z0-9_]{2,32}$/),
@@ -70,7 +70,7 @@ export async function createChannel(ctx: Ctx, input: unknown) {
 }
 
 export async function toggleChannel(ctx: Ctx, id: string, active: boolean) {
-  await requireOwned(await db.channel.findUnique({ where: { id } }), "Channel", ctx.orgId);
+  await requireOwnedForWrite(await db.channel.findUnique({ where: { id } }), "Channel", ctx);
   await db.channel.update({ where: { id }, data: { active } });
   await audit(db, ctx, active ? "channel.enabled" : "channel.disabled", undefined, id);
 }

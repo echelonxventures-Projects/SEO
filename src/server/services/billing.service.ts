@@ -560,7 +560,7 @@ function normalizeCapture(providerCode: string, event: VerifiedWebhook): Capture
   const entity = asRecord(asRecord(root.payload).entity);
   if (providerCode === "razorpay") {
     if (event.type === "payment_link.paid") {
-      const link = asRecord(asRecord(root.payload).payment_link).entity as Record<string, unknown>;
+      const link = asRecord(asRecord(asRecord(root.payload).payment_link).entity);
       const payments = (link.payments ?? []) as Array<{ id: string; amount: number; currency: string }>;
       const pay = payments[payments.length - 1];
       const amountMinor = pay ? BigInt(pay.amount) : BigInt(Number(link.amount_paid ?? 0));
@@ -591,7 +591,9 @@ function normalizeCapture(providerCode: string, event: VerifiedWebhook): Capture
       event.type === "checkout.session.completed" ||
       event.type === "checkout.session.async_payment_succeeded"
     ) {
-      const obj = asRecord(asRecord(root.payload).checkout_session).object as Record<string, unknown>;
+      // Stripe event envelope: { id, type, data: { object: CheckoutSession } }
+      const obj = asRecord(asRecord(root.data).object);
+      if (obj.payment_status && obj.payment_status !== "paid") return null;
       const meta = asRecord(obj.metadata);
       if (!obj.id) return null;
       return {
@@ -634,7 +636,10 @@ export async function processWebhook(
   }
   const { cfg, event } = verified;
 
-  const stored = await db.webhookEvent
+  // Store idempotently. A provider retry of an event we previously FAILED to
+  // process is re-claimed (FAILED -> RECEIVED) instead of being dropped as a
+  // duplicate — otherwise one transient error loses a real payment forever.
+  let stored = await db.webhookEvent
     .create({
       data: {
         gatewayConfigId: cfg.id,
@@ -646,37 +651,61 @@ export async function processWebhook(
       },
     })
     .catch(() => null);
-  if (!stored) return { handled: false, reason: "duplicate" };
+  if (!stored) {
+    const reclaimed = await db.webhookEvent.updateMany({
+      where: { providerCode, externalId: event.externalId, status: "FAILED" },
+      data: { status: "RECEIVED", error: null, gatewayConfigId: cfg.id },
+    });
+    if (reclaimed.count === 0) return { handled: false, reason: "duplicate" };
+    stored = await db.webhookEvent.findUniqueOrThrow({
+      where: { providerCode_externalId: { providerCode, externalId: event.externalId } },
+    });
+  }
+  const storedId = stored.id;
+  const mark = (status: "PROCESSED" | "IGNORED_UNKNOWN" | "IGNORED_DUPLICATE", error?: string) =>
+    db.webhookEvent.update({ where: { id: storedId }, data: { status, processedAt: new Date(), error: error ?? null } });
 
   try {
     const capture = normalizeCapture(providerCode, event);
     if (!capture || capture.amountMinor <= 0n) {
-      await db.webhookEvent.update({ where: { id: stored.id }, data: { status: "IGNORED_UNKNOWN", processedAt: new Date() } });
+      await mark("IGNORED_UNKNOWN");
       return { handled: false, reason: "unhandled_event_type" };
     }
+    // Tenancy boundary: a gateway may only settle invoices it is authoritative
+    // for. The platform gateway settles TENANT (subscription) invoices; a
+    // workspace gateway settles only that workspace's CLIENT invoices. Without
+    // this, a workspace could sign a webhook with its own secret and mark its
+    // platform subscription (or another tenant's invoice) as paid.
+    const scopeWhere: Prisma.InvoiceWhereInput =
+      cfg.scope === "PLATFORM"
+        ? { partyKind: "TENANT" }
+        : { partyKind: "CLIENT", orgId: cfg.orgId ?? "__none__" };
     const invoice = capture.matchByInvoiceId
-      ? await db.invoice.findFirst({ where: { id: capture.matchByInvoiceId, orgId: cfg.orgId ?? undefined } })
+      ? await db.invoice.findFirst({ where: { ...scopeWhere, id: capture.matchByInvoiceId } })
       : capture.matchByProviderRef
-        ? await db.invoice.findFirst({ where: { gatewayCheckoutRef: capture.matchByProviderRef } })
+        ? await db.invoice.findFirst({ where: { ...scopeWhere, gatewayCheckoutRef: capture.matchByProviderRef } })
         : null;
     if (!invoice) {
-      await db.webhookEvent.update({ where: { id: stored.id }, data: { status: "IGNORED_UNKNOWN", processedAt: new Date(), error: "invoice not found" } });
+      await mark("IGNORED_UNKNOWN", "invoice not found for this gateway");
       return { handled: false, reason: "unknown_invoice" };
     }
-    const existing = await db.payment.findFirst({
-      where: { gatewayPaymentRef: capture.paymentRef, status: { in: ["COMPLETED", "PENDING"] } },
-    });
-    if (existing) {
-      await db.webhookEvent.update({ where: { id: stored.id }, data: { status: "IGNORED_DUPLICATE", processedAt: new Date() } });
-      return { handled: true, reason: "already_settled" };
+    if (capture.currency.toUpperCase() !== invoice.currencyCode.toUpperCase()) {
+      await mark("IGNORED_UNKNOWN", `currency mismatch: ${capture.currency} vs ${invoice.currencyCode}`);
+      return { handled: false, reason: "currency_mismatch" };
     }
-    const outstanding = invoice.totalMinor - invoice.paidMinor;
-    const amount = capture.amountMinor > outstanding ? outstanding : capture.amountMinor;
-    if (amount <= 0n) {
-      await db.webhookEvent.update({ where: { id: stored.id }, data: { status: "IGNORED_DUPLICATE", processedAt: new Date() } });
-      return { handled: true, reason: "nothing_due" };
-    }
-    await db.$transaction(async (tx) => {
+    const outcome = await db.$transaction(async (tx) => {
+      // Serialize settlement per provider payment: concurrent deliveries of
+      // the same payment (e.g. payment.captured + payment_link.paid) cannot
+      // both pass the duplicate check.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`gwpay:${capture.paymentRef}`}))`;
+      const existing = await tx.payment.findFirst({
+        where: { gatewayPaymentRef: capture.paymentRef, status: { in: ["COMPLETED", "PENDING"] } },
+      });
+      if (existing) return "already_settled" as const;
+      const fresh = await tx.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+      const outstanding = fresh.totalMinor - fresh.paidMinor;
+      const amount = capture.amountMinor > outstanding ? outstanding : capture.amountMinor;
+      if (amount <= 0n) return "nothing_due" as const;
       await settleInvoicePayment(tx, {
         orgId: invoice.orgId,
         invoiceId: invoice.id,
@@ -699,12 +728,17 @@ export async function processWebhook(
           await tx.subscription.update({ where: { id: sub.id }, data: { status: "ACTIVE" } });
         }
       }
+      return "settled" as const;
     });
-    await db.webhookEvent.update({ where: { id: stored.id }, data: { status: "PROCESSED", processedAt: new Date() } });
+    if (outcome !== "settled") {
+      await mark("IGNORED_DUPLICATE");
+      return { handled: true, reason: outcome };
+    }
+    await mark("PROCESSED");
     return { handled: true };
   } catch (err) {
     await db.webhookEvent.update({
-      where: { id: stored.id },
+      where: { id: storedId },
       data: { status: "FAILED", error: err instanceof Error ? err.message : "unknown" },
     });
     throw err;

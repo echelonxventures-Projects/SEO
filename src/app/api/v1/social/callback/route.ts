@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { errorToResponse } from "@/server/errors";
 import { completeConnect } from "@/server/services/social.service";
+import { resolveViewer } from "@/server/context";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,8 @@ export async function GET(req: NextRequest): Promise<Response> {
     if (err || !state || !code) {
       return Response.redirect(`${process.env.APP_URL ?? ""}/social?error=denied`, 302);
     }
-    await completeConnect(decodeURIComponent(state), code);
+    const viewer = await resolveViewer(req.headers);
+    await completeConnect(decodeURIComponent(state), code, viewer?.userId ?? null);
     return Response.redirect(`${process.env.APP_URL ?? ""}/social?connected=1`, 302);
   } catch (e) {
     return errorToResponse(e);

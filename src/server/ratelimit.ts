@@ -14,11 +14,17 @@ export async function consumeBucket(
     INSERT INTO "RateLimitBucket" (id, "bucketKey", tokens, "maxTokens", "refillPerSec", "updatedAt")
     VALUES (gen_random_uuid()::text, ${bucketKey}, ${capacityPerMinute - cost}, ${capacityPerMinute}, ${refillPerSec}, now())
     ON CONFLICT ("bucketKey") DO UPDATE SET
-      tokens = LEAST(
-        ${capacityPerMinute},
-        "RateLimitBucket".tokens
-          + EXTRACT(EPOCH FROM (now() - "RateLimitBucket"."updatedAt")) * "RateLimitBucket"."refillPerSec"
-      ) - ${cost},
+      -- Floor at -cost: denied requests must not keep digging the bucket
+      -- deeper, or a client that keeps retrying is locked out far longer
+      -- than the configured rate implies.
+      tokens = GREATEST(
+        LEAST(
+          ${capacityPerMinute},
+          "RateLimitBucket".tokens
+            + EXTRACT(EPOCH FROM (now() - "RateLimitBucket"."updatedAt")) * "RateLimitBucket"."refillPerSec"
+        ) - ${cost},
+        ${-cost}
+      ),
       "maxTokens" = ${capacityPerMinute},
       "refillPerSec" = ${refillPerSec},
       "updatedAt" = now()

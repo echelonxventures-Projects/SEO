@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { clientIp } from "@/server/audit";
 import { headers } from "next/headers";
 import { requirePageViewer } from "@/server/pages";
 import { ctxOf } from "@/server/services/common";
@@ -13,7 +14,7 @@ export default async function PrintInvoicePage({ params }: PageProps<"/print/inv
   const h = await headers();
   let inv;
   try {
-    inv = await getInvoice(ctxOf(viewer, h.get("x-forwarded-for")), id);
+    inv = await getInvoice(ctxOf(viewer, clientIp(h)), id);
   } catch {
     notFound();
   }

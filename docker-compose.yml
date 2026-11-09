@@ -29,12 +29,33 @@ services:
       CRON_SECRET: ${CRON_SECRET:?openssl rand -hex 24}
       SMTP_URL: ${SMTP_URL:-}
       MAIL_FROM: ${MAIL_FROM:-}
-      OMNI_RATE_AUTH_PER_MIN: ${OMNI_RATE_AUTH_PER_MIN:-1000}
-      OMNI_RATE_API_PER_MIN: ${OMNI_RATE_API_PER_MIN:-2000}
+      OMNI_RATE_AUTH_PER_MIN: ${OMNI_RATE_AUTH_PER_MIN:-10}
+      OMNI_RATE_API_PER_MIN: ${OMNI_RATE_API_PER_MIN:-300}
+      # Reverse proxies in front of the app that append to X-Forwarded-For.
+      # Per-IP rate limits are only spoof-proof behind such a proxy (nginx/LB):
+      # Next.js itself does not append, it keeps whatever the client sent.
+      OMNI_TRUSTED_PROXY_HOPS: ${OMNI_TRUSTED_PROXY_HOPS:-1}
+      # Bootstrap platform-admin login used by `npm run db:seed` (required in prod).
       DEMO_EMAIL: ${DEMO_EMAIL:-}
       DEMO_PASSWORD: ${DEMO_PASSWORD:-}
+      OMNI_SEED_DEMO: ${OMNI_SEED_DEMO:-}
     ports:
       - "3000:3000"
+    restart: unless-stopped
+
+  # Drives every /api/v1/cron/* job (renewals, publishing, email, triggers…).
+  # Without this, scheduled work never runs.
+  scheduler:
+    build: .
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      CRON_TARGET_URL: http://app:3000
+      CRON_SECRET: ${CRON_SECRET:?openssl rand -hex 24}
+    command: ["node", "scripts/cron-runner.mjs"]
+    healthcheck:
+      disable: true
     restart: unless-stopped
 
 volumes:

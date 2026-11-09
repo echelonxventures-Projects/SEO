@@ -314,7 +314,22 @@ async function main() {
   // -------------------------------------------------------------------------
   // 7. Default demo user + workspace with rich sample data.
   // -------------------------------------------------------------------------
-  const demoPassword = process.env.DEMO_PASSWORD || "DemoPassword#1";
+  // In production this account is the bootstrap PLATFORM ADMIN, so it must
+  // never fall back to the publicly documented demo credentials.
+  const DEFAULT_DEMO_PASSWORD = "DemoPassword#1";
+  if (process.env.NODE_ENV === "production") {
+    const pw = process.env.DEMO_PASSWORD ?? "";
+    if (!process.env.DEMO_EMAIL || !pw) {
+      throw new Error(
+        "Production seed requires DEMO_EMAIL and DEMO_PASSWORD (the bootstrap platform-admin login). " +
+          "Refusing to create an admin with the public demo credentials.",
+      );
+    }
+    if (pw === DEFAULT_DEMO_PASSWORD || pw.length < 12) {
+      throw new Error("DEMO_PASSWORD must be at least 12 characters and not the documented demo password in production.");
+    }
+  }
+  const demoPassword = process.env.DEMO_PASSWORD || DEFAULT_DEMO_PASSWORD;
   const demoEmail = (process.env.DEMO_EMAIL || "founder@aithink.india").toLowerCase();
   const demoHash = await hashPassword(demoPassword);
 
@@ -428,7 +443,10 @@ async function main() {
   const { seedTemporalGlobals } = await import("./seed-temporal");
   await seedTemporalGlobals();
 
-  const demoAllowed = process.env.NODE_ENV !== "production" || process.env.DEMO_SEED_OVERRIDE === "1";
+  // OMNI_SEED_DEMO=1 forces sample data (even in prod); =0 skips it in dev.
+  // DEMO_SEED_OVERRIDE=1 is the legacy spelling of the force flag.
+  const demoAllowed =
+    demoSeedOverride() || (process.env.NODE_ENV !== "production" && process.env.OMNI_SEED_DEMO !== "0");
   if (!demoAllowed) {
     console.log("  [prod mode] demo workspace skipped — reference data only.");
   }
@@ -829,3 +847,7 @@ main()
   .finally(async () => {
     await db.$disconnect();
   });
+
+function demoSeedOverride(): boolean {
+  return process.env.OMNI_SEED_DEMO === "1" || process.env.DEMO_SEED_OVERRIDE === "1";
+}

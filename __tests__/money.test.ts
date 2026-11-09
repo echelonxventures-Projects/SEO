@@ -1,137 +1,103 @@
-import { mockDb } from "../setup";
-import { computeLine, computeDocument, splitTaxAcrossComponents, resolveTax } from "../../src/server/money";
+import {
+  bpsApply,
+  computeDocument,
+  computeLine,
+  divRound,
+  splitTaxAcrossComponents,
+  toMinor,
+} from "../src/server/money";
 
-describe("Money & Tax Engine", () => {
-  describe("computeLine", () => {
-    it("should calculate line total correctly", () => {
-      const result = computeLine(
-        BigInt(10000), // price minor (100.00)
-        150,           // qty hundredths (1.50)
-        0,             // discount bps
-        0,             // tax bps
-      );
+const CGST = { code: "CGST", name: "CGST", bps: 900 };
+const SGST = { code: "SGST", name: "SGST", bps: 900 };
+const IGST = { code: "IGST", name: "IGST", bps: 1800 };
 
-      expect(result.lineTotalMinor).toBe(BigInt(15000)); // 100.00 * 1.50
-      expect(result.taxMinor).toBe(BigInt(0));
-    });
-
-    it("should apply line discounts", () => {
-      const result = computeLine(
-        BigInt(10000),
-        100,
-        1000, // 10% discount
-        0,
-      );
-
-      expect(result.lineTotalMinor).toBe(BigInt(9000));
-      expect(result.discountMinor).toBe(BigInt(1000));
-    });
-
-    it("should calculate tax correctly", () => {
-      const result = computeLine(
-        BigInt(10000),
-        100,
-        0,
-        1800, // 18% tax
-      );
-
-      expect(result.taxMinor).toBe(BigInt(1800));
-    });
+describe("money primitives", () => {
+  it("converts major units to paise without float drift", () => {
+    expect(toMinor(19.99)).toBe(1999n);
+    expect(toMinor(0.1 + 0.2)).toBe(30n);
   });
 
-  describe("computeDocument", () => {
-    it("should sum line totals and apply document discount", () => {
-      const lines = [
-        { lineTotalMinor: BigInt(10000), discountMinor: BigInt(0), taxMinor: BigInt(1800) },
-        { lineTotalMinor: BigInt(5000), discountMinor: BigInt(0), taxMinor: BigInt(900) },
-      ];
-
-      const result = computeDocument(lines, BigInt(500), 0);
-
-      expect(result.subtotalMinor).toBe(BigInt(15000));
-      expect(result.discountMinor).toBe(BigInt(500));
-      expect(result.taxMinor).toBe(BigInt(2700));
-      expect(result.totalMinor).toBe(BigInt(17200));
-    });
-
-    it("should handle document-level discounts", () => {
-      const lines = [
-        { lineTotalMinor: BigInt(10000), discountMinor: BigInt(0), taxMinor: BigInt(1800) },
-      ];
-
-      const result = computeDocument(lines, BigInt(0), BigInt(1000));
-
-      expect(result.discountMinor).toBe(BigInt(1000));
-    });
+  it("rejects negative and non-finite amounts", () => {
+    expect(() => toMinor(-1)).toThrow();
+    expect(() => toMinor(Number.NaN)).toThrow();
+    expect(() => toMinor(Infinity)).toThrow();
   });
 
-  describe("splitTaxAcrossComponents", () => {
-    it("should split tax equally for CGST/SGST", () => {
-      const result = splitTaxAcrossComponents(BigInt(1800), "GST_INTRA");
-
-      expect(result.cgstMinor).toBe(BigInt(900));
-      expect(result.sgstMinor).toBe(BigInt(900));
-      expect(result.cgstMinor + result.sgstMinor).toBe(BigInt(1800)); // Must sum exactly
-    });
-
-    it("should handle IGST (no split)", () => {
-      const result = splitTaxAcrossComponents(BigInt(1800), "GST_INTER");
-
-      expect(result.igstMinor).toBe(BigInt(1800));
-    });
-
-    it("should use largest-remainder for odd amounts", () => {
-      const result = splitTaxAcrossComponents(BigInt(1001), "GST_INTRA");
-
-      // Should sum exactly to original amount
-      expect(result.cgstMinor + result.sgstMinor).toBe(BigInt(1001));
-      // One gets 500, other gets 501 (largest remainder)
-      expect(Math.abs(Number(result.cgstMinor) - Number(result.sgstMinor))).toBeLessThanOrEqual(1);
-    });
+  it("rounds half-up", () => {
+    expect(divRound(5n, 2n)).toBe(3n);
+    expect(divRound(4n, 3n)).toBe(1n);
+    expect(divRound(5n, 3n)).toBe(2n);
+    expect(() => divRound(1n, 0n)).toThrow("division by zero");
   });
 
-  describe("resolveTax", () => {
-    it("should return intra-state tax for same state", () => {
-      const result = resolveTax(
-        "KA", // org state
-        "KA", // client state
-        false // taxExempt
-      );
+  it("applies basis points and validates range", () => {
+    expect(bpsApply(10_000n, 1800)).toBe(1800n);
+    expect(() => bpsApply(100n, 10_001)).toThrow();
+    expect(() => bpsApply(100n, 1.5)).toThrow();
+  });
+});
 
-      expect(result.kind).toBe("GST_INTRA");
-    });
-
-    it("should return inter-state tax for different states", () => {
-      const result = resolveTax(
-        "KA",
-        "TN",
-        false
-      );
-
-      expect(result.kind).toBe("GST_INTER");
-    });
-
-    it("should return 0 rate for tax-exempt clients", () => {
-      const result = resolveTax("KA", "KA", true);
-
-      expect(result.rateBps).toBe(0);
-    });
+describe("computeLine", () => {
+  it("computes gross, discount, net and tax", () => {
+    // 2.5 units × ₹100.00, 10% discount, 18% tax
+    const l = computeLine({ unitPriceMinor: 10_000n, qtyHundredths: 250, discountBps: 1000, taxBps: 1800 });
+    expect(l).toEqual({ grossMinor: 25_000n, discountMinor: 2_500n, lineTotalMinor: 22_500n, taxMinor: 4_050n });
   });
 
-  describe("tax snapshots", () => {
-    it("should preserve historical tax rates", () => {
-      const orgState = "KA";
-      const clientState = "KA";
-      const orgRate = resolveTax(orgState, clientState, false);
+  it("rejects out-of-range quantity and price", () => {
+    expect(() => computeLine({ unitPriceMinor: 1n, qtyHundredths: -1, discountBps: 0, taxBps: 0 })).toThrow("quantity");
+    expect(() => computeLine({ unitPriceMinor: -1n, qtyHundredths: 100, discountBps: 0, taxBps: 0 })).toThrow("unit price");
+  });
+});
 
-      // Even if org later changes state, old invoices keep original rate
-      const snapshot = {
-        bps: orgRate.rateBps,
-        kind: orgRate.kind,
-      };
+describe("splitTaxAcrossComponents (GST)", () => {
+  it("CGST + SGST always sum exactly to tax at the combined rate", () => {
+    for (const base of [1n, 7n, 333n, 99_999n, 123_457n]) {
+      const parts = splitTaxAcrossComponents(base, 1800, [CGST, SGST]);
+      expect(parts[0] + parts[1]).toBe(bpsApply(base, 1800));
+      expect(parts[0] - parts[1]).toBeLessThanOrEqual(1n); // split stays balanced
+    }
+  });
 
-      expect(snapshot.bps).toBe(1800);
-      expect(snapshot.kind).toBe("GST_INTRA");
-    });
+  it("IGST takes the whole tax", () => {
+    expect(splitTaxAcrossComponents(10_001n, 1800, [IGST])).toEqual([bpsApply(10_001n, 1800)]);
+  });
+
+  it("returns nothing for no components", () => {
+    expect(splitTaxAcrossComponents(100n, 1800, [])).toEqual([]);
+  });
+});
+
+describe("computeDocument", () => {
+  const line = (unit: bigint, qty: number, taxBps: number, components = [CGST, SGST]) => ({
+    line: computeLine({ unitPriceMinor: unit, qtyHundredths: qty, discountBps: 0, taxBps }),
+    taxBps,
+    components,
+  });
+
+  it("totals lines and aggregates the tax breakdown by component", () => {
+    const doc = computeDocument([line(10_000n, 100, 1800), line(5_000n, 200, 1800)], 0n);
+    expect(doc.subtotalMinor).toBe(20_000n);
+    expect(doc.taxMinor).toBe(3_600n);
+    expect(doc.totalMinor).toBe(23_600n);
+    expect(doc.taxBreakdown).toEqual([
+      { code: "CGST", name: "CGST", bps: 900, baseMinor: 20_000n, taxMinor: 1_800n },
+      { code: "SGST", name: "SGST", bps: 900, baseMinor: 20_000n, taxMinor: 1_800n },
+    ]);
+  });
+
+  it("derives a single TAX component when a taxed line has none", () => {
+    const doc = computeDocument([line(10_000n, 100, 500, [])], 0n);
+    expect(doc.taxBreakdown).toEqual([{ code: "TAX", name: "Tax", bps: 500, baseMinor: 10_000n, taxMinor: 500n }]);
+  });
+
+  it("applies document discount after tax and never goes negative", () => {
+    expect(computeDocument([line(10_000n, 100, 0, [])], 1_000n).totalMinor).toBe(9_000n);
+    expect(computeDocument([line(100n, 100, 0, [])], 1_000n).totalMinor).toBe(0n);
+    expect(() => computeDocument([], -1n)).toThrow();
+  });
+
+  it("rejects components that don't sum to the line rate", () => {
+    expect(() => computeDocument([line(10_000n, 100, 1800, [CGST])], 0n)).toThrow("inconsistent");
   });
 });

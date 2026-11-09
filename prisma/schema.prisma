@@ -36,6 +36,8 @@ model User {
   lastLoginAt       DateTime?
   totpSecretEnc     Json?
   totpEnabledAt     DateTime?
+  /// Last TOTP time step accepted at login — codes at or before it are replays.
+  totpLastStep      Int?
   recoveryCodesHash String[]
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
@@ -282,14 +284,61 @@ model Organization {
   fiscalCalendars       FiscalCalendar[]
   libraryTemplates      LibraryTemplate[]
   temporalConfiguration TemporalConfiguration?
-  streamTransports     StreamTransport[]
-  marketplaceListings  MarketplaceListing[]
-  widgetEmbeds         WidgetEmbed[]
-  calendarConnectors   CalendarConnectorTemplate[]
-  calendarConnections  CalendarConnection[]
-  usageEvents          UsageEvent[]
-  branding             OrgBranding?
-  localeCatalogs       LocaleCatalog[]
+  streamTransports      StreamTransport[]
+  marketplaceListings   MarketplaceListing[]
+  widgetEmbeds          WidgetEmbed[]
+  calendarConnectors    CalendarConnectorTemplate[]
+  calendarConnections   CalendarConnection[]
+  usageEvents           UsageEvent[]
+  branding              OrgBranding?
+  localeCatalogs        LocaleCatalog[]
+
+  // UCIP composition layer (restored from migrations)
+  attributionResults    AttributionResult[]
+  attributionTouches    AttributionTouch[]
+  autonomousActions     AutonomousAction[]
+  autonomousPolicys     AutonomousPolicy[]
+  budgetPlans           BudgetPlan[]
+  campaignTemplates     CampaignTemplate[]
+  campaignVersions      CampaignVersion[]
+  channelOptimizations  ChannelOptimization[]
+  clientKycs            ClientKyc[]
+  commissionEvents      CommissionEvent[]
+  commissionRules       CommissionRule[]
+  complianceChecks      ComplianceCheck[]
+  compliancePolicys     CompliancePolicy[]
+  contentScores         ContentScore[]
+  contentTranslations   ContentTranslation[]
+  contentVersions       ContentVersion[]
+  contracts             Contract[]
+  conversionPredictions ConversionPrediction[]
+  decisionPolicys       DecisionPolicy[]
+  digitalTwinModels     DigitalTwinModel[]
+  dynamicPriceRules     DynamicPriceRule[]
+  experiments           Experiment[]
+  experimentAssignments ExperimentAssignment[]
+  fraudSignals          FraudSignal[]
+  funnels               Funnel[]
+  funnelSnapshots       FunnelSnapshot[]
+  journeys              Journey[]
+  journeyRuns           JourneyRun[]
+  knowledgeItems        KnowledgeItem[]
+  kpiDefs               KpiDef[]
+  kpiSnapshots          KpiSnapshot[]
+  lookalikeJobs         LookalikeJob[]
+  loyaltyAccounts       LoyaltyAccount[]
+  loyaltyTxns           LoyaltyTxn[]
+  optimizationRuns      OptimizationRun[]
+  orgHierarchys         OrgHierarchy[]
+  outcomeEvents         OutcomeEvent[]
+  portalInvites         PortalInvite[]
+  portalMembers         PortalMember[]
+  predictiveScores      PredictiveScore[]
+  recipientPreferences  RecipientPreference[]
+  ruleDefinitions       RuleDefinition[]
+  searchIndexRows       SearchIndexRow[]
+  settlements           Settlement[]
+  vouchers              Voucher[]
 
   @@index([status])
 }
@@ -555,6 +604,10 @@ model Client {
   blogPosts         BlogPost[]
   audiences         Audience[]
   onboardingSteps   OnboardingStep[]
+
+  // UCIP composition layer (restored from migrations)
+  clientKyc ClientKyc?
+  contracts Contract[]
 
   @@unique([orgId, name])
   @@index([orgId, status])
@@ -1108,7 +1161,7 @@ model Plan {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
-  currency      Currency       @relation(fields: [currencyCode], references: [code])
+  currency      Currency           @relation(fields: [currencyCode], references: [code])
   features      PlanFeature[]
   meteredPrices PlanMeteredPrice[]
   subscriptions Subscription[]
@@ -1461,6 +1514,20 @@ model Campaign {
   offersLink     CampaignOffer[]
   triggers       ScheduleTrigger[]
 
+  // UCIP composition layer (restored from migrations)
+  attributionResults    AttributionResult[]
+  attributionTouches    AttributionTouch[]
+  autonomousPolicys     AutonomousPolicy[]
+  budgetPlan            BudgetPlan?
+  campaignVersions      CampaignVersion[]
+  channelOptimizations  ChannelOptimization[]
+  conversionPredictions ConversionPrediction[]
+  experiments           Experiment[]
+  journeys              Journey[]
+  optimizationRuns      OptimizationRun[]
+  outcomeEvents         OutcomeEvent[]
+  predictiveScores      PredictiveScore[]
+
   @@index([orgId, status])
   @@index([clientId])
 }
@@ -1706,6 +1773,11 @@ model ContentPost {
   kind      ContentKind?    @relation(fields: [kindId], references: [id])
   createdBy User            @relation("ContentCreator", fields: [createdById], references: [id])
   targets   ContentTarget[]
+
+  // UCIP composition layer (restored from migrations)
+  contentScores       ContentScore[]
+  contentTranslations ContentTranslation[]
+  contentVersions     ContentVersion[]
 
   @@index([orgId, status, updatedAt])
 }
@@ -1970,6 +2042,9 @@ model EmailSend {
   subscriberId String
   status       EmailSendStatus @default(PENDING)
   attempts     Int             @default(0)
+  /// Dispatcher lease: set when a run claims this send, so overlapping runs
+  /// can't both deliver it. A stale lease (crashed run) is reclaimable.
+  claimedAt    DateTime?
   sentAt       DateTime?
   openedAt     DateTime?
   error        String?
@@ -2366,6 +2441,9 @@ model Audience {
   flights    CampaignFlight[]
   campaigns  Campaign[]       @relation("CampaignAudience")
 
+  // UCIP composition layer (restored from migrations)
+  lookalikeJobs LookalikeJob[]
+
   @@unique([orgId, name])
   @@index([orgId, status])
 }
@@ -2595,6 +2673,9 @@ model Offer {
   client      Client?           @relation(fields: [clientId], references: [id])
   redemptions OfferRedemption[]
   campaigns   CampaignOffer[]
+
+  // UCIP composition layer (restored from migrations)
+  vouchers Voucher[]
 
   @@unique([orgId, code])
   @@index([orgId, status])
@@ -3096,8 +3177,8 @@ model Calendar {
   resources    Resource[]
   triggers     TemporalTrigger[]
   availability AvailabilityProfile[]
-  widgets    WidgetEmbed[]
-  connections CalendarConnection[]
+  widgets      WidgetEmbed[]
+  connections  CalendarConnection[]
 
   @@unique([orgId, code])
   @@index([orgId, kind, archivedAt])
@@ -3812,21 +3893,21 @@ model TemporalConfiguration {
 
 enum TransportKind {
   HTTP_SINK // signed push (HMAC-SHA256) to any fabric receiver / webhook bridge
-  KAFKA     // broker adapter (connection string + topic in url field)
-  PULSAR    // broker adapter
+  KAFKA // broker adapter (connection string + topic in url field)
+  PULSAR // broker adapter
   EVENT_MESH
 }
 
 model StreamTransport {
   id          String        @id @default(cuid())
-  orgId       String?       // null = platform fabric (federates every workspace)
+  orgId       String? // null = platform fabric (federates every workspace)
   name        String
   kind        TransportKind @default(HTTP_SINK)
   url         String
-  secretEnc   Json          // HMAC key, AES-256-GCM envelope-encrypted at rest
+  secretEnc   Json // HMAC key, AES-256-GCM envelope-encrypted at rest
   eventMatch  String        @default("*") // "*"/"appointment.*"/"pattern.*"...
   cursorAt    DateTime      @default(now())
-  cursorId    String        @default("")  // at+id pair = resumable stream cursor
+  cursorId    String        @default("") // at+id pair = resumable stream cursor
   active      Boolean       @default(false) // fill-in-the-blank: inactive placeholder until configured
   failCount   Int           @default(0)
   lastError   String?
@@ -3871,32 +3952,32 @@ enum CertificationStatus {
 }
 
 model MarketplaceListing {
-  id            String             @id @default(cuid())
-  orgId         String?            // null = platform-published asset
-  publisherName String
-  code          String
-  name          String
-  description   String?
-  assetKind     LibraryTemplateKind @default(ENTERPRISE)
-  version       String             @default("1.0.0")
+  id              String              @id @default(cuid())
+  orgId           String? // null = platform-published asset
+  publisherName   String
+  code            String
+  name            String
+  description     String?
+  assetKind       LibraryTemplateKind @default(ENTERPRISE)
+  version         String              @default("1.0.0")
   // bundle: the installable payload — template spec, patterns, rules, connectors, shifts
-  bundle        Json               @default("{}")
-  pricingModel  PricingModel       @default(FREE)
-  priceMinor    BigInt             @default(0)
-  currencyCode  String             @default("INR")
-  revenueShareBps Int              @default(0)
-  status        ListingStatus      @default(DRAFT)
-  certification CertificationStatus @default(UNCERTIFIED)
-  certifiedAt   DateTime?
-  certifyNote   String?
-  installs      Int                @default(0)
-  ratingBps     Int                @default(0)
-  publishedAt   DateTime?
-  createdById   String
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
+  bundle          Json                @default("{}")
+  pricingModel    PricingModel        @default(FREE)
+  priceMinor      BigInt              @default(0)
+  currencyCode    String              @default("INR")
+  revenueShareBps Int                 @default(0)
+  status          ListingStatus       @default(DRAFT)
+  certification   CertificationStatus @default(UNCERTIFIED)
+  certifiedAt     DateTime?
+  certifyNote     String?
+  installs        Int                 @default(0)
+  ratingBps       Int                 @default(0)
+  publishedAt     DateTime?
+  createdById     String
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
 
-  org         Organization?          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org         Organization?        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   installsLog MarketplaceInstall[]
 
   @@unique([orgId, code, version])
@@ -3905,15 +3986,15 @@ model MarketplaceListing {
 }
 
 model MarketplaceInstall {
-  id           String   @id @default(cuid())
-  listingId    String
-  installerOrgId String
-  installedById String
-  version      String
-  createdIds   Json     @default("{}")
-  priceMinor   BigInt   @default(0)
-  revenueShareMinor BigInt @default(0)
-  createdAt    DateTime @default(now())
+  id                String   @id @default(cuid())
+  listingId         String
+  installerOrgId    String
+  installedById     String
+  version           String
+  createdIds        Json     @default("{}")
+  priceMinor        BigInt   @default(0)
+  revenueShareMinor BigInt   @default(0)
+  createdAt         DateTime @default(now())
 
   listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
 
@@ -3934,22 +4015,22 @@ enum WidgetKind {
 }
 
 model WidgetEmbed {
-  id           String     @id @default(cuid())
-  orgId        String
-  calendarId   String
-  name         String
-  kind         WidgetKind @default(BOOKING)
-  token        String     @unique
+  id             String     @id @default(cuid())
+  orgId          String
+  calendarId     String
+  name           String
+  kind           WidgetKind @default(BOOKING)
+  token          String     @unique
   // appearance: { primaryColor, title, subtitle, locale, timezone, showTimezone, theme }
-  appearance   Json       @default("{}")
+  appearance     Json       @default("{}")
   // behavior: { service, durationMinutes, maxAdvanceDays, minNoticeHours, allowWaitlist }
-  behavior     Json       @default("{}")
-  allowedOrigins String[] @default([])
-  active       Boolean    @default(true)
-  views        Int        @default(0)
-  createdById  String
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  behavior       Json       @default("{}")
+  allowedOrigins String[]   @default([])
+  active         Boolean    @default(true)
+  views          Int        @default(0)
+  createdById    String
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 
   org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   calendar Calendar     @relation(fields: [calendarId], references: [id], onDelete: Cascade)
@@ -3983,17 +4064,17 @@ enum CalendarConnectionStatus {
 }
 
 model CalendarConnectorTemplate {
-  id           String                    @id @default(cuid())
-  orgId        String?
-  key          String
-  name         String
-  protocol     CalendarConnectorProtocol
+  id        String                    @id @default(cuid())
+  orgId     String?
+  key       String
+  name      String
+  protocol  CalendarConnectorProtocol
   // config: { authorizeUrl, tokenUrl, apiBase, calendarListPath, eventsPath,
   //           scope, supportsPush, supportsPull, caldavPath, defaultTimezone }
-  config       Json                      @default("{}")
-  active       Boolean                   @default(true)
-  createdAt    DateTime                  @default(now())
-  updatedAt    DateTime                  @updatedAt
+  config    Json                      @default("{}")
+  active    Boolean                   @default(true)
+  createdAt DateTime                  @default(now())
+  updatedAt DateTime                  @updatedAt
 
   org         Organization?        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   connections CalendarConnection[]
@@ -4002,27 +4083,27 @@ model CalendarConnectorTemplate {
 }
 
 model CalendarConnection {
-  id            String                    @id @default(cuid())
-  orgId         String
-  calendarId    String
-  templateId    String
-  externalId    String?                   // provider calendar id / CalDAV href
-  displayName   String?
-  direction     CalendarSyncDirection     @default(BIDIRECTIONAL)
-  status        CalendarConnectionStatus  @default(PENDING)
+  id             String                   @id @default(cuid())
+  orgId          String
+  calendarId     String
+  templateId     String
+  externalId     String? // provider calendar id / CalDAV href
+  displayName    String?
+  direction      CalendarSyncDirection    @default(BIDIRECTIONAL)
+  status         CalendarConnectionStatus @default(PENDING)
   // credentials: AES-256-GCM envelope { accessToken, refreshToken, expiresAt, username, password }
   credentialsEnc Json                     @default("{}")
-  syncToken     String?
-  lastSyncAt    DateTime?
-  lastError     String?
-  eventCount    Int                       @default(0)
-  createdById   String
-  createdAt     DateTime                  @default(now())
-  updatedAt     DateTime                  @updatedAt
+  syncToken      String?
+  lastSyncAt     DateTime?
+  lastError      String?
+  eventCount     Int                      @default(0)
+  createdById    String
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
 
-  org      Organization               @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  calendar Calendar                   @relation(fields: [calendarId], references: [id], onDelete: Cascade)
-  template CalendarConnectorTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  org      Organization              @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calendar Calendar                  @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  template CalendarConnectorTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
 
   @@unique([calendarId, templateId, externalId])
   @@index([orgId, status])
@@ -4046,16 +4127,16 @@ enum UsageMetric {
 }
 
 model UsageEvent {
-  id          String      @id @default(cuid())
-  orgId       String
-  metric      UsageMetric
-  quantity    Int         @default(1)
-  subjectType String?
-  subjectId   String?
-  meta        Json        @default("{}")
-  billed      Boolean     @default(false)
+  id            String      @id @default(cuid())
+  orgId         String
+  metric        UsageMetric
+  quantity      Int         @default(1)
+  subjectType   String?
+  subjectId     String?
+  meta          Json        @default("{}")
+  billed        Boolean     @default(false)
   billedCycleId String?
-  at          DateTime    @default(now())
+  at            DateTime    @default(now())
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -4064,14 +4145,14 @@ model UsageEvent {
 }
 
 model PlanMeteredPrice {
-  id          String      @id @default(cuid())
-  planId      String
-  metric      UsageMetric
-  includedQty Int         @default(0)
-  priceMinor  BigInt      @default(0)
-  currencyCode String     @default("INR")
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  id           String      @id @default(cuid())
+  planId       String
+  metric       UsageMetric
+  includedQty  Int         @default(0)
+  priceMinor   BigInt      @default(0)
+  currencyCode String      @default("INR")
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 
   plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
@@ -4083,45 +4164,1117 @@ model PlanMeteredPrice {
 // ---------------------------------------------------------------------------
 
 model OrgBranding {
-  id             String   @id @default(cuid())
-  orgId          String   @unique
-  productName    String   @default("OmniMark")
-  tagline        String?
-  primaryColor   String   @default("#6366f1")
-  accentColor    String   @default("#22c55e")
-  logoUrl        String?
-  faviconUrl     String?
+  id                 String   @id @default(cuid())
+  orgId              String   @unique
+  productName        String   @default("OmniMark")
+  tagline            String?
+  primaryColor       String   @default("#6366f1")
+  accentColor        String   @default("#22c55e")
+  logoUrl            String?
+  faviconUrl         String?
   loginBackgroundUrl String?
-  customDomain   String?  @unique
-  emailFromName  String?
-  emailFromAddress String?
-  hidePoweredBy  Boolean  @default(false)
-  oem            Boolean  @default(false)
-  locale         String   @default("en-IN")
+  customDomain       String?  @unique
+  emailFromName      String?
+  emailFromAddress   String?
+  hidePoweredBy      Boolean  @default(false)
+  oem                Boolean  @default(false)
+  locale             String   @default("en-IN")
   // translations: { "nav.dashboard": "Dashboard", ... }
-  translations   Json     @default("{}")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  translations       Json     @default("{}")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 }
 
 model LocaleCatalog {
-  id        String   @id @default(cuid())
-  orgId     String?
-  code      String
-  name      String
+  id         String   @id @default(cuid())
+  orgId      String?
+  code       String
+  name       String
   nativeName String
-  direction String   @default("ltr")
+  direction  String   @default("ltr")
   // strings: { "nav.dashboard": "...", ... }
-  strings   Json     @default("{}")
-  isDefault Boolean  @default(false)
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  strings    Json     @default("{}")
+  isDefault  Boolean  @default(false)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, code])
   @@index([active])
+}
+
+// ===========================================================================
+// UCIP COMPOSITION & INTELLIGENCE PLATFORM — restored from migration
+// 20260916161559_ucip_composition_intelligence_platform (the schema had lost
+// these models while the migration, the services and the old client kept them).
+// ===========================================================================
+
+model AttributionResult {
+  id           String               @id @default(cuid())
+  orgId        String
+  campaignId   String?
+  subjectKey   String
+  model        AttributionModelKind @default(LAST_TOUCH)
+  creditBps    Json                 @default("{}")
+  touchCount   Int                  @default(0)
+  revenueMinor BigInt               @default(0)
+  computedAt   DateTime             @default(now())
+  campaign     Campaign?            @relation(fields: [campaignId], references: [id])
+  org          Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, model, computedAt])
+}
+
+model AttributionTouch {
+  id            String               @id @default(cuid())
+  orgId         String
+  campaignId    String?
+  trackedLinkId String?
+  subjectKey    String
+  channelCode   String?
+  kind          AttributionTouchKind
+  valueMinor    BigInt               @default(0)
+  currencyCode  String               @default("INR")
+  at            DateTime             @default(now())
+  campaign      Campaign?            @relation(fields: [campaignId], references: [id])
+  org           Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, campaignId, kind, at])
+  @@index([orgId, subjectKey, at])
+}
+
+model AutonomousAction {
+  id           String           @id @default(cuid())
+  policyId     String
+  orgId        String
+  kind         String
+  beforeJson   Json             @default("{}")
+  afterJson    Json             @default("{}")
+  approvedById String?
+  applied      Boolean          @default(false)
+  at           DateTime         @default(now())
+  org          Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  policy       AutonomousPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, at])
+}
+
+model AutonomousPolicy {
+  id          String             @id @default(cuid())
+  orgId       String
+  campaignId  String?
+  mode        AutonomousMode     @default(ASSIST)
+  budgetRule  Json               @default("{}")
+  actionRule  Json               @default("{}")
+  active      Boolean            @default(true)
+  createdById String
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  actions     AutonomousAction[]
+  campaign    Campaign?          @relation(fields: [campaignId], references: [id])
+  org         Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, mode, active])
+}
+
+model BudgetPlan {
+  id           String       @id @default(cuid())
+  orgId        String
+  campaignId   String       @unique
+  mode         BudgetMode   @default(FIXED)
+  totalMinor   BigInt
+  currencyCode String
+  allocations  Json         @default("[]")
+  pacingJson   Json         @default("{}")
+  createdById  String
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  campaign     Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+model CampaignTemplate {
+  id          String         @id @default(cuid())
+  orgId       String
+  code        String
+  name        String
+  category    String         @default("GENERAL")
+  description String?
+  status      TemplateStatus @default(DRAFT)
+  definition  Json           @default("{}")
+  version     Int            @default(1)
+  publishedAt DateTime?
+  createdById String
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  org         Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, code])
+  @@index([orgId, status, category])
+}
+
+model CampaignVersion {
+  id          String       @id @default(cuid())
+  orgId       String
+  campaignId  String
+  version     Int
+  snapshot    Json
+  changeNote  String?
+  createdById String
+  createdAt   DateTime     @default(now())
+  campaign    Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, version])
+  @@index([orgId, createdAt])
+}
+
+model ChannelOptimization {
+  id                String           @id @default(cuid())
+  orgId             String
+  campaignId        String?
+  kind              OptimizationKind @default(CHANNEL)
+  recommendation    Json             @default("{}")
+  expectedUpliftBps Int              @default(0)
+  applied           Boolean          @default(false)
+  createdAt         DateTime         @default(now())
+  campaign          Campaign?        @relation(fields: [campaignId], references: [id])
+  org               Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+}
+
+model ClientKyc {
+  id           String       @id @default(cuid())
+  orgId        String
+  clientId     String       @unique
+  status       KycStatus    @default(NOT_STARTED)
+  documents    Json         @default("[]")
+  reviewerNote String?
+  verifiedAt   DateTime?
+  verifiedById String?
+  expiresAt    DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+model CommissionEvent {
+  id           String           @id @default(cuid())
+  orgId        String
+  ruleId       String?
+  partnerKey   String
+  invoiceId    String?
+  amountMinor  BigInt
+  currencyCode String           @default("INR")
+  status       CommissionStatus @default(ACCRUED)
+  at           DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  org          Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status, at])
+}
+
+model CommissionRule {
+  id         String         @id @default(cuid())
+  orgId      String
+  partnerKey String
+  kind       CommissionKind @default(PERCENT)
+  valueBps   Int            @default(0)
+  valueMinor BigInt         @default(0)
+  active     Boolean        @default(true)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  org        Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, partnerKey])
+}
+
+model ComplianceCheck {
+  id          String                @id @default(cuid())
+  policyId    String
+  orgId       String
+  subjectType String
+  subjectId   String
+  status      ComplianceCheckStatus @default(PASS)
+  findings    Json                  @default("[]")
+  at          DateTime              @default(now())
+  org         Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status, at])
+  @@index([orgId, subjectType, subjectId])
+}
+
+model CompliancePolicy {
+  id          String              @id @default(cuid())
+  orgId       String
+  code        String
+  name        String
+  framework   ComplianceFramework @default(CUSTOM)
+  rules       Json                @default("{}")
+  active      Boolean             @default(true)
+  createdById String
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  org         Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, code])
+  @@index([orgId, framework, active])
+}
+
+model ContentScore {
+  id         String           @id @default(cuid())
+  orgId      String
+  postId     String
+  kind       ContentScoreKind
+  scoreBps   Int              @default(0)
+  detail     Json             @default("{}")
+  computedAt DateTime         @default(now())
+  org        Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  post       ContentPost      @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, kind])
+  @@index([orgId, kind])
+}
+
+model ContentTranslation {
+  id             String             @id @default(cuid())
+  orgId          String
+  postId         String
+  locale         String
+  title          String
+  body           String
+  status         LocalizationStatus @default(PENDING)
+  translatedById String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  org            Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  post           ContentPost        @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, locale])
+  @@index([orgId, status])
+}
+
+model ContentVersion {
+  id          String               @id @default(cuid())
+  orgId       String
+  postId      String
+  version     Int
+  snapshot    Json
+  status      ContentVersionStatus @default(DRAFT)
+  changeNote  String?
+  createdById String
+  createdAt   DateTime             @default(now())
+  org         Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  post        ContentPost          @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, version])
+  @@index([orgId, createdAt])
+}
+
+model Contract {
+  id           String         @id @default(cuid())
+  orgId        String
+  clientId     String
+  code         String
+  name         String
+  status       ContractStatus @default(DRAFT)
+  startDate    DateTime?
+  endDate      DateTime?
+  valueMinor   BigInt         @default(0)
+  currencyCode String         @default("INR")
+  terms        String?
+  signedAt     DateTime?
+  fileUrl      String?
+  createdById  String
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  client       Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  org          Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, code])
+  @@index([orgId, clientId, status])
+}
+
+model ConversionPrediction {
+  id         String       @id @default(cuid())
+  orgId      String
+  campaignId String?
+  subjectKey String
+  scoreBps   Int          @default(0)
+  features   Json         @default("{}")
+  model      String       @default("heuristic-v1")
+  at         DateTime     @default(now())
+  campaign   Campaign?    @relation(fields: [campaignId], references: [id])
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, campaignId, scoreBps])
+}
+
+model DecisionPolicy {
+  id          String       @id @default(cuid())
+  orgId       String
+  code        String
+  name        String
+  inputs      Json         @default("[]")
+  outcome     Json         @default("{}")
+  priority    Int          @default(100)
+  active      Boolean      @default(true)
+  createdById String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, code])
+  @@index([orgId, active])
+}
+
+model DigitalTwinModel {
+  id          String             @id @default(cuid())
+  orgId       String
+  subjectType DigitalTwinSubject
+  subjectId   String
+  state       Json               @default("{}")
+  version     Int                @default(1)
+  updatedAt   DateTime           @updatedAt
+  createdAt   DateTime           @default(now())
+  org         Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, subjectType, subjectId])
+}
+
+model DynamicPriceRule {
+  id          String       @id @default(cuid())
+  orgId       String
+  code        String
+  name        String
+  appliesTo   Json         @default("{}")
+  formula     Json         @default("{}")
+  priority    Int          @default(100)
+  active      Boolean      @default(true)
+  createdById String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, code])
+  @@index([orgId, active, priority])
+}
+
+model Experiment {
+  id            String                 @id @default(cuid())
+  orgId         String
+  campaignId    String?
+  code          String
+  name          String
+  hypothesis    String?
+  status        ExperimentStatus       @default(DRAFT)
+  variants      Json                   @default("[]")
+  metric        String                 @default("conversion")
+  startsAt      DateTime?
+  endsAt        DateTime?
+  winnerVariant String?
+  createdById   String
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  campaign      Campaign?              @relation(fields: [campaignId], references: [id])
+  org           Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  assignments   ExperimentAssignment[]
+
+  @@unique([orgId, code])
+  @@index([orgId, status])
+}
+
+model ExperimentAssignment {
+  id           String       @id @default(cuid())
+  experimentId String
+  orgId        String
+  subjectKey   String
+  variant      String
+  converted    Boolean      @default(false)
+  convertedAt  DateTime?
+  meta         Json         @default("{}")
+  createdAt    DateTime     @default(now())
+  experiment   Experiment   @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([experimentId, subjectKey])
+  @@index([orgId, variant])
+}
+
+model FraudSignal {
+  id         String          @id @default(cuid())
+  orgId      String
+  subjectKey String
+  kind       FraudSignalKind
+  severity   String          @default("MEDIUM")
+  evidence   Json            @default("{}")
+  resolved   Boolean         @default(false)
+  at         DateTime        @default(now())
+  org        Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, kind, at])
+  @@index([orgId, subjectKey])
+}
+
+model Funnel {
+  id          String           @id @default(cuid())
+  orgId       String
+  campaignId  String?
+  name        String
+  createdById String
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  snaps       FunnelSnapshot[]
+  steps       FunnelStep[]
+}
+
+model FunnelSnapshot {
+  id        String       @id @default(cuid())
+  funnelId  String
+  orgId     String
+  date      DateTime
+  counts    Json         @default("[]")
+  createdAt DateTime     @default(now())
+  funnel    Funnel       @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([funnelId, date])
+  @@index([orgId, date])
+}
+
+model FunnelStep {
+  id        String @id @default(cuid())
+  funnelId  String
+  name      String
+  position  Int
+  predicate Json   @default("{}")
+  funnel    Funnel @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+
+  @@index([funnelId, position])
+}
+
+model Journey {
+  id           String        @id @default(cuid())
+  orgId        String
+  campaignId   String?
+  name         String
+  description  String?
+  status       JourneyStatus @default(DRAFT)
+  triggerEvent String        @default("campaign.launched")
+  definition   Json          @default("{}")
+  version      Int           @default(1)
+  createdById  String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  campaign     Campaign?     @relation(fields: [campaignId], references: [id])
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  nodes        JourneyNode[]
+  runs         JourneyRun[]
+
+  @@index([orgId, status])
+}
+
+model JourneyNode {
+  id        String          @id @default(cuid())
+  journeyId String
+  kind      JourneyNodeKind
+  position  Int             @default(0)
+  label     String?
+  config    Json            @default("{}")
+  nextIds   String[]        @default([])
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  journey   Journey         @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  @@index([journeyId, position])
+}
+
+model JourneyRun {
+  id            String           @id @default(cuid())
+  journeyId     String
+  orgId         String
+  subjectKey    String
+  currentNodeId String?
+  status        JourneyRunStatus @default(RUNNING)
+  context       Json             @default("{}")
+  startedAt     DateTime         @default(now())
+  finishedAt    DateTime?
+  updatedAt     DateTime         @updatedAt
+  journey       Journey          @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+  org           Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([journeyId, status])
+  @@index([orgId, subjectKey])
+}
+
+model KnowledgeItem {
+  id          String        @id @default(cuid())
+  orgId       String
+  kind        KnowledgeKind @default(ARTICLE)
+  title       String
+  body        String
+  tags        String[]      @default([])
+  sourceRef   String?
+  createdById String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  org         Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, kind])
+  @@index([orgId, tags])
+}
+
+model KpiDef {
+  id             String        @id @default(cuid())
+  orgId          String
+  code           String
+  name           String
+  module         KpiModule     @default(CAMPAIGN)
+  unit           KpiUnit       @default(COUNT)
+  targetValue    BigInt        @default(0)
+  thresholdValue BigInt        @default(0)
+  direction      String        @default("UP")
+  active         Boolean       @default(true)
+  createdById    String
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  org            Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  kpiSnapshots   KpiSnapshot[]
+
+  @@unique([orgId, code])
+  @@index([orgId, module, active])
+}
+
+model KpiSnapshot {
+  id        String       @id @default(cuid())
+  kpiId     String
+  orgId     String
+  date      DateTime
+  value     BigInt       @default(0)
+  meta      Json         @default("{}")
+  createdAt DateTime     @default(now())
+  kpi       KpiDef       @relation(fields: [kpiId], references: [id], onDelete: Cascade)
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([kpiId, date])
+  @@index([orgId, date])
+}
+
+model LookalikeJob {
+  id               String          @id @default(cuid())
+  orgId            String
+  seedAudienceId   String
+  resultAudienceId String?
+  name             String
+  sizeRequested    Int             @default(1000)
+  similarityBps    Int             @default(0)
+  status           LookalikeStatus @default(QUEUED)
+  features         Json            @default("[]")
+  error            String?
+  createdById      String
+  createdAt        DateTime        @default(now())
+  finishedAt       DateTime?
+  org              Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  seedAudience     Audience        @relation(fields: [seedAudienceId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+}
+
+model LoyaltyAccount {
+  id             String       @id @default(cuid())
+  orgId          String
+  clientId       String?
+  recipientKey   String
+  tier           String       @default("BASE")
+  points         Int          @default(0)
+  lifetimePoints Int          @default(0)
+  joinedAt       DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  org            Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  loyaltyTxns    LoyaltyTxn[]
+
+  @@unique([orgId, recipientKey])
+  @@index([orgId, tier])
+}
+
+model LoyaltyTxn {
+  id        String         @id @default(cuid())
+  accountId String
+  orgId     String
+  kind      LoyaltyTxnKind
+  points    Int
+  reason    String?
+  refType   String?
+  refId     String?
+  at        DateTime       @default(now())
+  account   LoyaltyAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  org       Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, at])
+}
+
+model OptimizationRun {
+  id                String           @id @default(cuid())
+  orgId             String
+  campaignId        String?
+  kind              OptimizationKind
+  input             Json             @default("{}")
+  recommendation    Json             @default("{}")
+  expectedUpliftBps Int              @default(0)
+  applied           Boolean          @default(false)
+  createdById       String
+  createdAt         DateTime         @default(now())
+  campaign          Campaign?        @relation(fields: [campaignId], references: [id])
+  org               Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, kind, createdAt])
+}
+
+model OrgHierarchy {
+  id             String            @id @default(cuid())
+  orgId          String
+  parentClientId String
+  childClientId  String
+  relation       HierarchyRelation @default(SUBSIDIARY)
+  createdAt      DateTime          @default(now())
+  org            Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([parentClientId, childClientId])
+  @@index([orgId, parentClientId])
+}
+
+model OutcomeEvent {
+  id           String       @id @default(cuid())
+  orgId        String
+  campaignId   String?
+  subjectKey   String
+  kind         OutcomeKind  @default(CONVERSION)
+  channelCode  String?
+  valueMinor   BigInt       @default(0)
+  currencyCode String       @default("INR")
+  meta         Json         @default("{}")
+  at           DateTime     @default(now())
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id])
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, campaignId, at])
+  @@index([orgId, kind, at])
+}
+
+model PortalInvite {
+  id          String       @id @default(cuid())
+  orgId       String
+  clientId    String?
+  kind        PortalKind   @default(CLIENT)
+  email       String
+  token       String       @unique
+  permissions String[]     @default([])
+  invitedById String
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdAt   DateTime     @default(now())
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, email])
+}
+
+model PortalMember {
+  id          String       @id @default(cuid())
+  orgId       String
+  clientId    String?
+  userId      String
+  kind        PortalKind   @default(CLIENT)
+  permissions String[]     @default([])
+  invitedById String
+  active      Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId, kind])
+  @@index([orgId, kind, active])
+}
+
+model PredictiveScore {
+  id         String         @id @default(cuid())
+  orgId      String
+  campaignId String?
+  subjectKey String
+  kind       PredictiveKind
+  scoreBps   Int            @default(0)
+  model      String         @default("heuristic-v1")
+  features   Json           @default("{}")
+  computedAt DateTime       @default(now())
+  campaign   Campaign?      @relation(fields: [campaignId], references: [id])
+  org        Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, kind, subjectKey])
+}
+
+model RecipientPreference {
+  id         String         @id @default(cuid())
+  orgId      String
+  subjectKey String
+  kind       PreferenceKind
+  value      Json           @default("{}")
+  source     String         @default("manual")
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  org        Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, subjectKey, kind])
+  @@index([orgId, kind])
+}
+
+model RuleDefinition {
+  id          String       @id @default(cuid())
+  orgId       String
+  code        String
+  name        String
+  appliesTo   String       @default("CAMPAIGN")
+  predicate   Json         @default("{}")
+  priority    Int          @default(100)
+  active      Boolean      @default(true)
+  createdById String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, code])
+  @@index([orgId, appliesTo, active])
+}
+
+model SearchIndexRow {
+  id         String       @id @default(cuid())
+  orgId      String
+  entityType String
+  entityId   String
+  title      String
+  body       String
+  tokens     String[]     @default([])
+  updatedAt  DateTime     @updatedAt
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, entityType, entityId])
+  @@index([orgId, entityType])
+  @@index([tokens])
+}
+
+model Settlement {
+  id           String           @id @default(cuid())
+  orgId        String
+  partnerKey   String
+  periodStart  DateTime
+  periodEnd    DateTime
+  amountMinor  BigInt           @default(0)
+  currencyCode String           @default("INR")
+  status       SettlementStatus @default(OPEN)
+  reference    String?
+  paidAt       DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  org          Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status, periodEnd])
+}
+
+model Voucher {
+  id           String        @id @default(cuid())
+  orgId        String
+  offerId      String?
+  code         String
+  kind         VoucherKind
+  valueMinor   BigInt        @default(0)
+  balanceMinor BigInt        @default(0)
+  currencyCode String        @default("INR")
+  recipientKey String?
+  status       VoucherStatus @default(ISSUED)
+  expiresAt    DateTime?
+  meta         Json          @default("{}")
+  issuedById   String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  offer        Offer?        @relation(fields: [offerId], references: [id])
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, code])
+  @@index([orgId, recipientKey])
+  @@index([orgId, status])
+}
+
+enum AttributionModelKind {
+  LAST_TOUCH
+  FIRST_TOUCH
+  LINEAR
+  POSITION_BASED
+  TIME_DECAY
+  CUSTOM
+}
+
+enum AttributionTouchKind {
+  IMPRESSION
+  CLICK
+  CONVERSION
+}
+
+enum AutonomousMode {
+  OFF
+  ASSIST
+  AUTO
+}
+
+enum BudgetMode {
+  FIXED
+  PACING
+  AUTO
+}
+
+enum CommissionKind {
+  PERCENT
+  FIXED
+  HYBRID
+}
+
+enum CommissionStatus {
+  ACCRUED
+  APPROVED
+  PAID
+  REVERSED
+}
+
+enum ComplianceCheckStatus {
+  PASS
+  WARN
+  FAIL
+  NOT_APPLICABLE
+}
+
+enum ComplianceFramework {
+  GDPR
+  CCPA
+  HIPAA
+  SOC2
+  ISO27001
+  CUSTOM
+}
+
+enum ContentScoreKind {
+  READABILITY
+  SEO
+  ENGAGEMENT
+  BRAND_SENTIMENT
+  ACCESSIBILITY
+}
+
+enum ContentVersionStatus {
+  DRAFT
+  REVIEW
+  APPROVED
+  SUPERSEDED
+}
+
+enum ContractStatus {
+  DRAFT
+  PENDING_SIGNATURE
+  SIGNED
+  ACTIVE
+  EXPIRED
+  TERMINATED
+}
+
+enum DigitalTwinSubject {
+  CLIENT
+  CAMPAIGN
+  AUDIENCE
+  CHANNEL
+  OFFER
+}
+
+enum ExperimentStatus {
+  DRAFT
+  RUNNING
+  PAUSED
+  CONCLUDED
+  ARCHIVED
+}
+
+enum FraudSignalKind {
+  VELOCITY
+  DEVICE_REUSE
+  IP_CLUSTER
+  GEO_MISMATCH
+  REPEATED_CANCELLATION
+  IMPOSSIBLE_TRAVEL
+  CUSTOM
+}
+
+enum HierarchyRelation {
+  SUBSIDIARY
+  DIVISION
+  FRANCHISE
+  PARTNER
+  RESELLER
+}
+
+enum JourneyNodeKind {
+  TRIGGER
+  DELAY
+  CONDITION
+  SPLIT
+  MESSAGE
+  ACTION
+  EXIT
+}
+
+enum JourneyRunStatus {
+  RUNNING
+  WAITING
+  COMPLETED
+  EXITED
+  FAILED
+}
+
+enum JourneyStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+enum KnowledgeKind {
+  FAQ
+  PLAYBOOK
+  ARTICLE
+  POLICY
+  RUNBOOK
+  TEMPLATE
+}
+
+enum KpiModule {
+  CAMPAIGN
+  CHANNEL
+  AUDIENCE
+  CONTENT
+  OFFER
+  OPERATIONS
+}
+
+enum KpiUnit {
+  CURRENCY
+  COUNT
+  RATIO
+  BPS
+}
+
+enum KycStatus {
+  NOT_STARTED
+  PENDING
+  REVIEW
+  MANUAL_REVIEW
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum LocalizationStatus {
+  PENDING
+  TRANSLATED
+  REVIEWED
+  PUBLISHED
+}
+
+enum LookalikeStatus {
+  QUEUED
+  RUNNING
+  READY
+  FAILED
+}
+
+enum LoyaltyTxnKind {
+  EARN
+  BURN
+  ADJUST
+  EXPIRE
+}
+
+enum OptimizationKind {
+  BUDGET
+  CHANNEL
+  CREATIVE
+  TIMING
+  AUDIENCE
+}
+
+enum OutcomeKind {
+  IMPRESSION
+  CLICK
+  CONVERSION
+  REVENUE
+  REDEMPTION
+  SIGNUP
+  SUBSCRIPTION
+  CHURN
+  CUSTOM
+}
+
+enum PortalKind {
+  CLIENT
+  PARTNER
+  AGENCY
+  ADMIN
+}
+
+enum PredictiveKind {
+  CHURN
+  CONVERSION
+  LIFETIME_VALUE
+  ENGAGEMENT
+  NEXT_BEST_ACTION
+}
+
+enum PreferenceKind {
+  CHANNEL
+  TIMEZONE
+  CONTENT_LANGUAGE
+  FREQUENCY
+  TOPIC
+  OPT_OUT
+}
+
+enum SettlementStatus {
+  OPEN
+  PROCESSING
+  PAID
+  FAILED
+}
+
+enum TemplateStatus {
+  DRAFT
+  PUBLISHED
+  DEPRECATED
+  ARCHIVED
+}
+
+enum VoucherKind {
+  CASHBACK
+  VOUCHER
+  REWARD
+  GIFT_CARD
+  STORE_CREDIT
+}
+
+enum VoucherStatus {
+  ISSUED
+  PARTIALLY_REDEEMED
+  REDEEMED
+  EXPIRED
+  VOID
 }

@@ -4,7 +4,7 @@ import { AppError, ErrorCodes } from "../errors";
 import { codeish, nameish, bpsSchema } from "../schemas";
 import { validatePattern } from "../numbering";
 import type { Ctx } from "./common";
-import { audit, requireOwned } from "./common";
+import { audit, requireOwned, requireOwnedForWrite } from "./common";
 import type { CategoryKind, Prisma, TaxRateKind } from "@/generated/prisma/client";
 
 // ---------------------------------------------------------------------------
@@ -76,11 +76,9 @@ export async function createTaxRate(ctx: Ctx, input: unknown) {
 }
 
 export async function setTaxRateActive(ctx: Ctx, id: string, active: boolean) {
-  const rate = await requireOwned(
+  const rate = await requireOwnedForWrite(
     await db.taxRate.findUnique({ where: { id } }),
-    "Tax rate",
-    ctx.orgId,
-  );
+    "Tax rate", ctx);
   await db.taxRate.update({ where: { id }, data: { active } });
   await audit(db, ctx, active ? "taxrate.enabled" : "taxrate.disabled", undefined, id);
   return { id: rate.id, active };
@@ -166,7 +164,7 @@ export async function createCategory(ctx: Ctx, input: unknown) {
 
 export async function updateCategory(ctx: Ctx, id: string, input: unknown) {
   const data = categorySchema.pick({ name: true, sortOrder: true }).partial().extend({ active: z.boolean().optional() }).parse(input);
-  await requireOwned(await db.category.findUnique({ where: { id } }), "Category", ctx.orgId);
+  await requireOwnedForWrite(await db.category.findUnique({ where: { id } }), "Category", ctx);
   return db.category.update({ where: { id }, data });
 }
 

@@ -67,7 +67,10 @@ export async function resolveViewer(headers: Headers): Promise<Viewer | null> {
       data: { lastUsedAt: new Date() },
     });
     const roleGrants = await loadGrants(membership.role.code);
-    const permissions = key.scopes.length > 0 ? new Set(key.scopes) : roleGrants;
+    // Scopes narrow the creator's CURRENT role — never widen it. A demoted
+    // member's keys lose the dropped permissions immediately.
+    const permissions =
+      key.scopes.length > 0 ? new Set(key.scopes.filter((s) => roleGrants.has(s))) : roleGrants;
     return {
       userId: membership.userId,
       email: `apikey:${key.prefix}`,

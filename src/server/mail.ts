@@ -8,6 +8,7 @@ export type MailMessage = {
   html?: string;
   replyTo?: string;
   from?: string; // overrides MAIL_FROM (e.g. campaign sender identity)
+  headers?: Record<string, string>; // e.g. List-Unsubscribe
 };
 
 let transporter: Transporter | null = null;
@@ -44,5 +45,6 @@ export async function sendMail(msg: MailMessage): Promise<void> {
     text: msg.text,
     html: msg.html,
     replyTo: msg.replyTo,
+    headers: msg.headers,
   });
 }

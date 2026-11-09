@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { clientIp } from "@/server/audit";
 import Link from "next/link";
 import { requirePageViewer } from "@/server/pages";
 import { ctxOf } from "@/server/services/common";
@@ -18,7 +19,7 @@ export default async function ClientDetailPage({ params }: PageProps<"/clients/[
   const h = await headers();
   let data;
   try {
-    data = await getClient(ctxOf(viewer, h.get("x-forwarded-for")), id);
+    data = await getClient(ctxOf(viewer, clientIp(h)), id);
   } catch {
     notFound();
   }

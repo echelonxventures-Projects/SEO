@@ -48,9 +48,22 @@ export function requestId(req: NextRequest): string {
 }
 
 /** Maintenance mode (platform SystemSetting) blocks non-platform-admins. */
+// Read on every request — cache briefly so the flag costs ~1 query / 5s / instance.
+const MAINTENANCE_TTL_MS = 5_000;
+let maintenanceCache: { at: number; value: { on?: boolean; message?: string } | undefined } | null = null;
+
+/** Drop the cached flag so a toggle takes effect on this instance immediately
+ *  (other instances pick it up within MAINTENANCE_TTL_MS). */
+export function invalidateMaintenanceCache(): void {
+  maintenanceCache = null;
+}
+
 async function assertMaintenance(viewer: Viewer | null): Promise<void> {
-  const row = await db.systemSetting.findUnique({ where: { key: "maintenance" } });
-  const m = row?.value as { on?: boolean; message?: string } | undefined;
+  if (!maintenanceCache || Date.now() - maintenanceCache.at > MAINTENANCE_TTL_MS) {
+    const row = await db.systemSetting.findUnique({ where: { key: "maintenance" } });
+    maintenanceCache = { at: Date.now(), value: row?.value as { on?: boolean; message?: string } | undefined };
+  }
+  const m = maintenanceCache.value;
   if (!m?.on) return;
   if (viewer?.isPlatformAdmin) return;
   throw new AppError(ErrorCodes.SERVICE_UNAVAILABLE, m.message || "OmniMark is in scheduled maintenance — we'll be right back.");
@@ -95,7 +108,10 @@ export function apiHandler(opts: ApiOptions, handler: Handler): Handler {
       if (!/^[\w.-]{8,120}$/.test(idemKey)) {
         throw new AppError(ErrorCodes.VALIDATION, "Idempotency-Key must be 8-120 chars of letters, digits, dot, dash, underscore");
       }
-      const orgId = viewer!.active!.orgId;
+      if (!viewer?.active) {
+        throw new AppError(ErrorCodes.ORG_MISMATCH, "Idempotent requests require an active organization");
+      }
+      const orgId = viewer.active.orgId;
       const endpoint = `${req.method} ${new URL(req.url).pathname}`;
       const bodyText = await req.clone().text().catch(() => "");
       const bodyHash = sha256(bodyText);

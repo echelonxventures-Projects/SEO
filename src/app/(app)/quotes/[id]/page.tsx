@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { clientIp } from "@/server/audit";
 import Link from "next/link";
 import { headers } from "next/headers";
 import { requirePageViewer } from "@/server/pages";
@@ -17,7 +18,7 @@ export default async function QuoteDetailPage({ params }: PageProps<"/quotes/[id
   const h = await headers();
   let q;
   try {
-    q = await getQuote(ctxOf(viewer, h.get("x-forwarded-for")), id);
+    q = await getQuote(ctxOf(viewer, clientIp(h)), id);
   } catch {
     notFound();
   }

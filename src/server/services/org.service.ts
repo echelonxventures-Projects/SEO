@@ -223,6 +223,18 @@ export async function createApiKey(ctx: Ctx, input: unknown) {
     if (known.length !== new Set(data.scopes).size) {
       throw new AppError(ErrorCodes.VALIDATION, "One or more scopes are not valid permission codes");
     }
+    // A key can never hold more power than the member minting it.
+    const held = ctx.viewer.active?.permissions ?? new Set<string>();
+    const excess = data.scopes.filter((s) => !held.has(s));
+    if (excess.length > 0) {
+      throw new AppError(
+        ErrorCodes.FORBIDDEN,
+        `You cannot grant scopes you do not hold: ${excess.join(", ")}`,
+      );
+    }
+  }
+  if (ctx.viewer.authKind === "apikey") {
+    throw new AppError(ErrorCodes.FORBIDDEN, "API keys cannot mint other API keys");
   }
   const raw = randomToken(24);
   const secret = `omni_${raw}`; // the FULL string (prefix included) is the credential

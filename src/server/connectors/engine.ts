@@ -13,6 +13,7 @@ import type {
   SocialProviderAdapter,
   TokenBundle,
 } from "../social-providers/types";
+import { guardedFetch as fetch } from "../net-guard"; // SSRF-guarded: workspace-controlled URLs
 
 export type ConnectorTemplateRow = {
   id: string;
