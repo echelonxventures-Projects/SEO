@@ -17,13 +17,26 @@ function matches(row: Row, where: Where = {}): boolean {
     const v = row[k];
     if (cond && typeof cond === "object" && !(cond instanceof Date)) {
       const c = cond as Record<string, unknown>;
-      if ("in" in c) return (c.in as unknown[]).includes(v);
-      if ("not" in c) return v !== c.not;
-      if ("gte" in c) return (v as Date | number) >= (c.gte as Date | number);
-      if ("lt" in c) return v !== null && v !== undefined && (v as Date | number) < (c.lt as Date | number);
+      const OPS = ["in", "not", "gt", "gte", "lt", "lte"];
+      if (Object.keys(c).some((op) => OPS.includes(op))) {
+        // every operator present must hold (e.g. { gte: a, lt: b })
+        const cmp = (x: unknown) => (x instanceof Date ? x.getTime() : (x as number));
+        const has = v !== null && v !== undefined;
+        return Object.entries(c).every(([op, arg]) => {
+          if (op === "in") return (arg as unknown[]).includes(v);
+          if (op === "not") return v !== arg;
+          if (!has) return false; // SQL: NULL never satisfies a range
+          if (op === "gt") return cmp(v) > cmp(arg);
+          if (op === "gte") return cmp(v) >= cmp(arg);
+          if (op === "lt") return cmp(v) < cmp(arg);
+          if (op === "lte") return cmp(v) <= cmp(arg);
+          return true;
+        });
+      }
       // compound unique key, e.g. providerCode_externalId: {providerCode, externalId}
       return Object.entries(c).every(([ck, cv]) => row[ck] === cv);
     }
+    if (cond === null) return v === null || v === undefined; // unset column reads as NULL
     return v === cond;
   });
 }
@@ -39,7 +52,7 @@ function applyData(row: Row, data: Record<string, unknown>) {
   }
 }
 
-function table(name: string, uniques: string[][] = []) {
+function table(name: string, uniques: string[][] = [], defaults: Record<string, unknown> = {}) {
   const rows: Row[] = [];
   const violates = (candidate: Row, self?: Row) =>
     uniques.some((cols) =>
@@ -48,7 +61,7 @@ function table(name: string, uniques: string[][] = []) {
   return {
     rows,
     async create({ data }: { data: Record<string, unknown> }) {
-      const row = { id: nextId(name), ...data } as Row;
+      const row = { id: nextId(name), createdAt: new Date(), ...defaults, ...data } as Row;
       if (violates(row)) {
         const err = new Error(`Unique constraint failed on ${name}`) as Error & { code: string };
         err.code = "P2002";
@@ -105,6 +118,8 @@ export function createFakeDb() {
     emailCampaign: table("camp"),
     emailSend: table("send"),
     organization: table("org"),
+    otpToken: table("otp", [["codeHash"]], { attempts: 0, consumedAt: null }),
+    session: table("session"),
     /** Document numbering (`nextDocumentNumber`) — one sequence for all orgs. */
     async $queryRaw() {
       paymentSeq += 1;

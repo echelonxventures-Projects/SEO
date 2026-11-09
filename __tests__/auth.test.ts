@@ -110,3 +110,43 @@ describe("TOTP replay", () => {
     await expect(completeMfaLogin(signToken("mfa", u.id, 300), previous, meta)).rejects.toThrow("Incorrect");
   });
 });
+
+describe("password reset codes", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mail = require("../src/server/mail") as { sendMail: jest.Mock };
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { forgotPassword, resetPassword } = require("../src/server/services/auth.service") as typeof import("../src/server/services/auth.service");
+  const lastCode = () => /Reset code: (\d{6})/.exec(String(mail.sendMail.mock.calls.at(-1)?.[0]?.text))?.[1] ?? "";
+  const wrong = (code: string, i: number) => String((Number(code) - 100000 + 1 + i) % 900000 + 100000);
+
+  beforeEach(() => mail.sendMail.mockClear());
+
+  it("parallel wrong guesses can't get past the 5-attempt limit", async () => {
+    await addUser(holder.db);
+    await forgotPassword("a@example.com");
+    const code = lastCode();
+    await Promise.allSettled(
+      Array.from({ length: 20 }, (_, i) => resetPassword({ email: "a@example.com", code: wrong(code, i), newPassword: "Another-Pass-77" }, null)),
+    );
+    // the attempts are spent, so even the right code no longer works
+    await expect(resetPassword({ email: "a@example.com", code, newPassword: "Another-Pass-77" }, null)).rejects.toThrow(/too many attempts|expired/i);
+  });
+
+  it("a new code cancels the previous one", async () => {
+    await addUser(holder.db);
+    await forgotPassword("a@example.com");
+    const first = lastCode();
+    await forgotPassword("a@example.com");
+    const second = lastCode();
+    if (first !== second) {
+      await expect(resetPassword({ email: "a@example.com", code: first, newPassword: "Another-Pass-77" }, null)).rejects.toThrow();
+    }
+    await expect(resetPassword({ email: "a@example.com", code: second, newPassword: "Another-Pass-77" }, null)).resolves.toBeUndefined();
+  });
+
+  it("caps issuance at 5 codes an hour, silently", async () => {
+    await addUser(holder.db);
+    for (let i = 0; i < 7; i++) await expect(forgotPassword("a@example.com")).resolves.toEqual({ sent: true });
+    expect(mail.sendMail).toHaveBeenCalledTimes(5);
+  });
+});

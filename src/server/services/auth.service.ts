@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { db } from "../db";
 import { getEnv } from "../env";
 import { AppError, ErrorCodes } from "../errors";
@@ -23,8 +24,24 @@ export const registerSchema = z.object({
 const OTP_TTL = 1000 * 60 * 15; // 15 minutes
 const OTP_MAX_ATTEMPTS = 5;
 
-async function issueOtp(purpose: "PASSWORD_RESET" | "EMAIL_VERIFICATION", subject: string) {
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+const OTP_MAX_PER_HOUR = 5;
+
+/**
+ * Issues a fresh 6-digit code and cancels any earlier live code for the same
+ * purpose+subject, so at most one code is guessable at a time. Returns null
+ * when the subject has hit the hourly issuance cap (callers stay silent so
+ * the cap can't be used to probe which emails have accounts).
+ */
+async function issueOtp(purpose: "PASSWORD_RESET" | "EMAIL_VERIFICATION", subject: string): Promise<string | null> {
+  const recent = await db.otpToken.count({
+    where: { purpose, subject, createdAt: { gte: new Date(Date.now() - 60 * 60_000) } },
+  });
+  if (recent >= OTP_MAX_PER_HOUR) return null;
+  const code = String(crypto.randomInt(100000, 1000000));
+  await db.otpToken.updateMany({
+    where: { purpose, subject, consumedAt: null },
+    data: { consumedAt: new Date() },
+  });
   await db.otpToken.create({
     data: { purpose, subject, codeHash: sha256(`${purpose}:${subject}:${code}`), expiresAt: new Date(Date.now() + OTP_TTL) },
   });
@@ -37,31 +54,29 @@ export async function consumeOtp(
   code: string,
 ): Promise<void> {
   const active = await db.otpToken.findMany({
-    where: { purpose, subject, consumedAt: null, expiresAt: { gt: new Date() } },
+    where: { purpose, subject, consumedAt: null, expiresAt: { gt: new Date() }, attempts: { lt: OTP_MAX_ATTEMPTS } },
     orderBy: { createdAt: "desc" },
     take: 10,
   });
   if (active.length === 0) {
-    throw new AppError(ErrorCodes.FORBIDDEN, "This code has expired. Request a new one.");
+    throw new AppError(ErrorCodes.FORBIDDEN, "This code has expired or had too many attempts. Request a new one.");
   }
   const hash = sha256(`${purpose}:${subject}:${code}`);
-  const match = active.find((o) => safeEqual(o.codeHash, hash));
-  if (!match) {
-    let anyLeft = false;
-    for (const o of active) {
-      if (o.attempts + 1 >= OTP_MAX_ATTEMPTS) {
-        await db.otpToken.update({ where: { id: o.id }, data: { consumedAt: new Date() } });
-      } else {
-        anyLeft = true;
-        await db.otpToken.update({ where: { id: o.id }, data: { attempts: o.attempts + 1 } });
-      }
-    }
-    if (!anyLeft) {
-      throw new AppError(ErrorCodes.FORBIDDEN, "Too many attempts. Request a new code.");
-    }
-    throw new AppError(ErrorCodes.FORBIDDEN, "Invalid code.");
+  for (const o of active) {
+    // Spend one attempt atomically *before* comparing, so parallel guesses
+    // can't all read attempts=0 and slip past the limit.
+    const spent = await db.otpToken.updateMany({
+      where: { id: o.id, consumedAt: null, attempts: { lt: OTP_MAX_ATTEMPTS } },
+      data: { attempts: { increment: 1 } },
+    });
+    if (spent.count === 0 || !safeEqual(o.codeHash, hash)) continue;
+    const claimed = await db.otpToken.updateMany({
+      where: { id: o.id, consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+    if (claimed.count === 1) return;
   }
-  await db.otpToken.update({ where: { id: match.id }, data: { consumedAt: new Date() } });
+  throw new AppError(ErrorCodes.FORBIDDEN, "Invalid code.");
 }
 
 export async function register(input: unknown, meta: { ip: string | null; userAgent: string | null }) {
@@ -107,14 +122,16 @@ export async function register(input: unknown, meta: { ip: string | null; userAg
   });
 
   const verifyCode = await issueOtp("EMAIL_VERIFICATION", result.user.emailNormalized);
-  await sendMail({
-    to: result.user.email,
-    subject: "Verify your OmniMark account",
-    text:
-      `Welcome to OmniMark!\n\nYour verification code is ${verifyCode} (valid 15 minutes).\n` +
-      `Enter it at ${getEnv().APP_URL}/verify-email to verify ${result.user.email}.\n\n` +
-      `If you did not create this account, ignore this email.`,
-  });
+  if (verifyCode) {
+    await sendMail({
+      to: result.user.email,
+      subject: "Verify your OmniMark account",
+      text:
+        `Welcome to OmniMark!\n\nYour verification code is ${verifyCode} (valid 15 minutes).\n` +
+        `Enter it at ${getEnv().APP_URL}/verify-email to verify ${result.user.email}.\n\n` +
+        `If you did not create this account, ignore this email.`,
+    });
+  }
 
   const session = await createSession(result.user.id, meta);
   return { userId: result.user.id, orgId: result.org.id, session };
@@ -352,6 +369,7 @@ export async function forgotPassword(email: string): Promise<{ sent: boolean }> 
   // Always report success to prevent account enumeration.
   if (!user || !user.passwordHash || user.status !== "ACTIVE") return { sent: true };
   const code = await issueOtp("PASSWORD_RESET", user.emailNormalized);
+  if (!code) return { sent: true }; // hourly cap reached — same answer as success
   await sendMail({
     to: user.email,
     subject: "Reset your OmniMark password",
