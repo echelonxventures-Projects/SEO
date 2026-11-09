@@ -6,8 +6,8 @@ A multi-tenant platform to run an SEO / digital-marketing business end-to-end:
 | | |
 |---|---|
 | **Stack** | Next.js 16 (App Router, Turbopack) · React 19 · TypeScript · Tailwind 4 · Prisma 7 · PostgreSQL 16 |
-| **Scale** | 134 entities / 111 enums · 316 API routes · 65 screens · constitutional domain layers |
-| **Verified** | `npm run build` ✓ · `tsc --noEmit` ✓ · `eslint` 0 errors ✓ · **337/337 API smoke ×3 (prod mode)** · verified against the `docker compose` prod stack ✓ · **52/52 page renders** ✓ · webhook HMAC verified in-test ✓ · **unit tests for ledger & tax** ✓ · **migration rollback verified** ✓ |
+| **Scale** | 181 entities / 145 enums · 316 API routes · 65 screens · constitutional domain layers |
+| **Gates (CI)** | `eslint` · `tsc --noEmit` · `npm run test:unit` (money/GST, ledger, payment webhooks incl. tenancy boundary, security helpers) · `npm run build` · API smoke against a fresh Postgres · scheduler pass over every cron · migration replay + seed idempotency. Any failure fails the build. |
 
 ## What it does
 
@@ -54,19 +54,25 @@ npm run db:seed        # reference data + plans + RBAC + demo workspace
 npm run dev            # http://localhost:3000
 ```
 
-**Demo login** (from seed): `founder@aithink.india` / `DemoPassword#1`
+**Demo login** (dev seed only): `founder@aithink.india` / `DemoPassword#1`
 (workspace *AIthink Digital* with clients, projects, ranks, campaigns, quotes, invoices).
+This user is a **platform admin** — in production the seed refuses to run
+unless `DEMO_EMAIL` / `DEMO_PASSWORD` (≥ 12 chars, not the demo default) are set.
+
+**Scheduled jobs** don't run by themselves — start the scheduler alongside the
+app: `npm run cron` (or `npm run cron:once` to kick every job once).
 
 ### Testing
 
-**Unit tests** (critical services):
-- `billing.service.ts` — Ledger operations, payment settlement, subscription lifecycle
-- `money.ts` — Tax calculations, invoice computations, GST splitting
-- `webhook.ts` — Signature verification, idempotency
+**Unit tests** (`npm run test:unit`, jest, in-memory DB fake in `__tests__/fake-db.ts`):
+- `money.test.ts` — paise conversion, half-up rounding, line/document totals, CGST+SGST exact split, rate/component consistency
+- `ledger.test.ts` — payment settlement, numbering, status derivation (PAID / PARTIALLY_PAID / OVERDUE), overpayment & draft/void refusal
+- `webhook.test.ts` — Razorpay + Stripe signatures, **tenancy boundary** (a workspace gateway can't settle platform or other-tenant invoices), currency mismatch, duplicate events, one payment never settled twice, retry of FAILED events
+- `security.test.ts` — spoof-proof client IP, exact widget origin matching, cron secret, SSRF guard (private/metadata addresses, redirect re-check), platform-default rows read-only for workspaces
 
 **Integration tests**:
-- `test:smoke` — 337 API assertions against live server
-- `test:migration-rollback` — Verify database migrations rollback cleanly
+- `test:smoke` — API end-to-end assertions against a live server
+- `test:migration-rollback` — replays every migration onto an empty database and checks seed idempotency (Prisma has no down-migrations; recovery = a new forward migration). **Resets the DB** — only runs on `*_test` / `*_ci` databases
 
 ### Scripts
 
@@ -78,10 +84,12 @@ npm run dev            # http://localhost:3000
 | `npm run db:migrate` | prisma migrate dev |
 | `npm run db:seed` | seed / re-seed (idempotent) |
 | `npm run test:smoke` | 337-assertion API end-to-end suite (incl. full UTP + TPaaS battery) |
-| `npm run test:unit` | Run unit tests for billing ledger and tax engine |
+| `npm run test:unit` | Unit tests (money/GST, ledger, webhooks, security) |
 | `npm run test:unit:coverage` | Unit tests with coverage report |
-| `npm run test:migration-rollback` | Verify migrations can rollback without data loss |
-| `npm run monitoring:setup` | Initialize monitoring thresholds |
+| `npm run test:migration-rollback` | Replay all migrations on a fresh `*_test` DB + seed idempotency |
+| `npm run db:drift` | Fail if `schema.prisma` differs from the migrated database (run after `prisma migrate deploy`) |
+| `npm run cron` / `cron:once` | Scheduler that drives every `/api/v1/cron/*` job (continuous / single pass) |
+| `npm run monitoring:setup` | Write default alert thresholds (`-- --force` resets them) |
 | `npm run monitoring:check` | Check webhook and cron health |
 | `npx tsx scripts/smoke-pages.ts` | render-check all 52+52 screens |
 | `npx prisma studio` | browse data |
@@ -120,6 +128,12 @@ node scripts/monitoring/check-alerts.js --webhook=https://hooks.slack.com/...
 
 ## Scheduling
 
+`scripts/cron-runner.mjs` drives every job below on its own cadence (1 min for
+publishing/email/triggers/outbox/stream, 5 min for flights/offers/reports,
+15 min for renewals/calendar sync, hourly materialization, 6-hourly
+governance), never overlapping itself. Run it as the compose `scheduler`
+service or `npm run cron`. Cadences are listed in `src/server/monitoring-config.ts`.
+
 Cron endpoints (all require `Authorization: Bearer $CRON_SECRET`):
 `/api/v1/cron/renew` (subscriptions + overdue sweeps),
 `/api/v1/cron/publisher` (content calendar publishing),
@@ -146,9 +160,9 @@ shows a live *production-readiness* score with every unfilled blank listed
    `DATABASE_URL` (managed Postgres with pooler ok), `APP_URL=https://…`,
    fresh `OMNI_ENCRYPTION_KEYS` (+ version), `OMNI_TOKEN_SECRET`,
    `CRON_SECRET`, `SMTP_URL`/`MAIL_FROM`.
-   ⚠ Never reuse the dev keyring values; never seed demo in prod
-   (`OMNI_SEED_DEMO` guard makes `npm run db:seed` reference-data-only under
-   production unless `DEMO_SEED_OVERRIDE=1`).
+   ⚠ Never reuse the dev keyring values; never seed demo data in prod
+   (sample data is skipped under production unless `OMNI_SEED_DEMO=1`).
+   Set `DEMO_EMAIL` / `DEMO_PASSWORD` — the seed's bootstrap platform admin.
 2. **Migrate & seed** — `npx prisma migrate deploy && npm run db:seed`
    (creates currencies, GST groups, RBAC, plans, tag templates + placeholder
    gateway/AI blanks).
@@ -160,10 +174,14 @@ shows a live *production-readiness* score with every unfilled blank listed
    generation transparently falls back to the offline demo engine.
 5. **Social** — /social: create the Meta/X/LinkedIn apps with redirect
    `/api/v1/social/callback`, paste client id/secret, connect accounts.
-6. **Cron** — schedule three heartbeats (readiness page tracks staleness):
-   `POST /api/v1/cron/renew`, `/cron/publisher`, `/cron/email-dispatch`
-   with `Authorization: Bearer $CRON_SECRET` (Vercel cron / k8s CronJob).
-7. **Health** — LB probe `GET /api/v1/health`; liveness + DB check.
+6. **Cron** — run the scheduler (`npm run cron`, or the compose `scheduler`
+   service) next to the app; it calls all 12 cron endpoints with
+   `Authorization: Bearer $CRON_SECRET`. `GET /api/v1/monitoring/cron-status`
+   shows each job's last run.
+7. **Proxy** — run behind a reverse proxy / load balancer and set
+   `OMNI_TRUSTED_PROXY_HOPS` to the number of proxies, so per-IP rate limits
+   can't be spoofed via `X-Forwarded-For`.
+8. **Health** — LB probe `GET /api/v1/health`; liveness + DB check.
 
 Local dev note: the repo lives on a Desktop that iCloud may sync — sync
 artifacts (`… 2.ts` files inside `.next`) can corrupt Turbopack's dev cache.
@@ -174,13 +192,12 @@ just use `npm run build && npm run start`.
 
 ```bash
 cp .env.example .env   # fill APP_URL, PG_PASSWORD, OMNI_*, CRON_SECRET
-docker compose up --build -d   # postgres 16 + app (standalone build, migrate on boot)
-docker compose exec -e DEMO_SEED_OVERRIDE=1 app npm run db:seed
+docker compose up --build -d   # postgres 16 + app (migrate on boot) + scheduler
+docker compose exec app npm run db:seed   # needs DEMO_EMAIL / DEMO_PASSWORD in .env
 ```
 
-Verified end-to-end: the full 300-assertion suite (incl. webhook HMAC fan-out and
-event-stream pushes to a host-side receiver via `SMOKE_SINK_HOST=host.docker.internal`)
-passes against exactly this compose stack.
+The smoke suite can target this stack too (event-stream pushes to a host-side
+receiver via `SMOKE_SINK_HOST=host.docker.internal`).
 
 ## Documentation
 
